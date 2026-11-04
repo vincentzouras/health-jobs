@@ -44,6 +44,7 @@ web/
   app/                  Next.js app router
     page.tsx            server component: loads jobs from Postgres
     JobBoard.tsx        client component (Material UI): search, filters, status buttons, archive
+    employerColor.ts    per-employer chip colour (stable hue per source)
     theme.ts            MUI theme (Roboto, flat buttons)
     Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)

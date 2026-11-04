@@ -49,6 +49,9 @@ npm run dev
 - The UI is [Material UI](https://mui.com/material-ui/) v9 with the Next.js app-router cache
   provider (`app/Providers.tsx`, `app/theme.ts`). There is no hand-written stylesheet — layout
   comes from `Stack`/`Container` and spacing from `sx`.
+- Each employer chip has its own colour. Employers are ranked by when the scan first saw them
+  and stepped through the colour wheel by the golden angle, so a source keeps its colour as
+  more are added, and neighbouring cards contrast hard (`app/employerColor.ts`).
 - The table is created automatically on first request (`CREATE TABLE IF NOT EXISTS`).
 - The UI polls `/api/jobs` every 5 minutes and has a manual Refresh button.
 - A job whose `last_seen` is older than 7 days gets a **may be closed** badge rather than

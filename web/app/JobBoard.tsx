@@ -18,6 +18,7 @@ import {
   Typography,
 } from '@mui/material';
 import type { Job, Status } from '@/lib/db';
+import { employerColor, type EmployerColor } from './employerColor';
 
 interface ApiPayload {
   active: Job[];
@@ -88,6 +89,18 @@ function metaLine(job: Job, rel: (iso: string | null) => string, marked = false)
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** Colored pill so each employer is recognizable at a glance. */
+function EmployerChip({ employer, color }: { employer: string; color: EmployerColor }) {
+  return (
+    <Chip
+      size="small"
+      variant="outlined"
+      label={employer}
+      sx={{ bgcolor: color.bg, color: color.fg, borderColor: color.border }}
+    />
+  );
 }
 
 /** Note box: opened by "Not for me" on a live job and by "Add/Edit note" in the archive. */
@@ -250,6 +263,22 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     return [...s].sort();
   }, [data]);
 
+  // Colour slots follow first-sighting order, so adding a new employer never recolours
+  // the ones already on the board.
+  const colorFor = useMemo(() => {
+    const firstSeen = new Map<string, number>();
+    for (const j of [...data.active, ...data.archive]) {
+      const t = new Date(j.firstSeen).getTime();
+      const cur = firstSeen.get(j.employer);
+      if (cur === undefined || t < cur) firstSeen.set(j.employer, t);
+    }
+    const order = [...firstSeen.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+      .map(([name]) => name);
+    const index = new Map(order.map((name, i) => [name, i]));
+    return (employer: string) => employerColor(index.get(employer) ?? 0);
+  }, [data]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let rows = data.active.filter((j) => {
@@ -341,6 +370,17 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             <MenuItem value="all">All employers</MenuItem>
             {employers.map((e) => (
               <MenuItem key={e} value={e}>
+                <Box
+                  component="span"
+                  sx={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    bgcolor: colorFor(e).dot,
+                    mr: 1,
+                    flexShrink: 0,
+                  }}
+                />
                 {e}
               </MenuItem>
             ))}
@@ -391,7 +431,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                         )}
                       </Typography>
                       <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <Chip size="small" label={job.employer} variant="outlined" />
+                        <EmployerChip employer={job.employer} color={colorFor(job.employer)} />
                         <Typography variant="body2" color="text.secondary">
                           {metaLine(job, rel)}
                         </Typography>
@@ -476,7 +516,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                             )}
                           </Typography>
                           <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
-                            <Chip size="small" label={job.employer} variant="outlined" />
+                            <EmployerChip employer={job.employer} color={colorFor(job.employer)} />
                             <Chip
                               size="small"
                               variant="outlined"
