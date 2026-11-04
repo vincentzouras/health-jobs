@@ -10,6 +10,7 @@ Modes
   (default)      check sources, print alert text for NEW + relevant jobs, else print nothing
   --baseline     record everything currently live, alert nothing
   --selftest     run the relevance filter against a labelled corpus, print pass/fail
+  --backfill-posted  read posted dates off detail pages for known jobs that lack one
   --dump         print every posting that passed/didn't pass the filter (debug)
   --resimulate N drop N random seen keys so they re-alert (validation only)
 
@@ -355,7 +356,12 @@ EXTRACT_JS = r"""
 BODY_JS = r"""
 (() => {
   const main = document.querySelector('main') || document.body;
-  return (main.innerText || '').replace(/\s+/g, ' ').slice(0, 6000);
+  const body = (main.innerText || '').replace(/\s+/g, ' ').slice(0, 6000);
+  // Posted dates sit below the fold on some ATSs (NEOGOV's "Opening Date"), so keep a
+  // wider copy purely for date extraction. The 6k `body` stays the input to the
+  // hard-requirement screen so extra chrome cannot trigger a false rejection.
+  const full = (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 20000);
+  return { body: body, full: full };
 })()
 """
 
@@ -451,20 +457,30 @@ def _fetch_jobs(url: str, wait: float = 5.0, extract_js: str = None):
             pass
 
 
-def fetch_body(url: str, wait: float = 4.0) -> str:
+def fetch_detail(url: str, wait: float = 4.0):
+    """Return (main_text_6k, full_text_20k) for a posting. Empty strings on failure."""
     tab = camo("POST", "/tabs", {"userId": USER, "sessionKey": "jobwatch", "url": url})
     tid = tab.get("tabId") or tab.get("id") or (tab.get("tab") or {}).get("tabId")
     if not tid:
-        return ""
+        return "", ""
     try:
         time.sleep(wait)
         ev = camo("POST", "/tabs/%s/evaluate" % tid, {"userId": USER, "expression": BODY_JS})
-        return (ev.get("result") or "")
+        res = ev.get("result") or {}
+        if isinstance(res, str):
+            return res, res
+        return (res.get("body") or ""), (res.get("full") or res.get("body") or "")
     finally:
         try:
             camo("DELETE", "/tabs/%s?userId=%s" % (tid, USER), timeout=20)
         except Exception:
             pass
+
+
+def posted_for(url: str, wait: float = 4.0):
+    """(body, posted_date) for a posting — one page load, used by the detail screen."""
+    body, full = fetch_detail(url, wait)
+    return body, (posted_from_body(full) or posted_from_body(body))
 
 
 # --------------------------------------------------------------------------
@@ -888,6 +904,13 @@ def save_state(st):
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
+POSTED_BODY_RE = re.compile(
+    r"(?:posting details\s*)?(?:posted on\s*)?(?:opening date|posted(?:\s+date)?|posting date|date posted|open date)\s*:?\s*"
+    r"(today|yesterday|\d+\+?\s*(?:hour|day|week|month)s?\s+ago|"
+    r"[A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2})",
+    re.I,
+)
+
 
 def parse_posted(hint, today=None):
     """Normalise an ATS date hint ("Posted 3 days ago", "11/02/2026", ...) to YYYY-MM-DD.
@@ -927,6 +950,19 @@ def parse_posted(hint, today=None):
     except Exception:
         return None
     return None
+
+
+def posted_from_body(text: str):
+    """Pull a posting date out of a job detail page.
+
+    Only some ATSs publish one (Workday's "posted on Posted 2 Days Ago", UltiPro's
+    "Posting Details Posted: October 14, 2026"). Penn, Tower and ChristianaCare do not,
+    so a missing date is a normal outcome, not a parse failure.
+    """
+    if not text:
+        return None
+    m = POSTED_BODY_RE.search(text)
+    return parse_posted(m.group(1)) if m else None
 
 
 def collect(prev_health=None):
@@ -1217,12 +1253,65 @@ def selftest() -> int:
             postfails += 1
         print(printf % ("PASS" if ok else "FAIL", str(hint)[:28], got))
 
+    bcases = [
+        ("Apply locations Philadelphia, PA posted on Posted Yesterday job requisition id REQ-1", "2026-11-03"),
+        ("posted on Posted 2 Days Ago job requisition id REQ-2", "2026-11-02"),
+        ("Requisition Number: PROVI007178 Posting Details Posted: October 14, 2026 Full-Time", "2026-10-14"),
+        ("Posted Date: 11/02/2026", "2026-11-02"),
+        ("Skip to main content | Careers Search All Jobs Saved Jobs", None),
+        ("", None),
+    ]
+    print("\n--- posted date from detail page ---")
+    bfails = 0
+    for body, want in bcases:
+        got = posted_from_body(body)
+        ok = got == want
+        if not ok:
+            bfails += 1
+            postfails += 1
+        print("%-6s %-28s -> %r" % ("PASS" if ok else "FAIL", body[:28].replace("\n", " "), got))
+
     print("\n%d title failures, %d detail failures, %d jefferson failures, %d penn failures, "
           "%d posted failures, %d cases total"
           % (fails, dfails, jfails, pfails, postfails,
-             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases)))
+             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases) + len(bcases)))
     return 0 if (fails == 0 and dfails == 0 and jfails == 0 and pfails == 0
                  and postfails == 0) else 1
+
+
+def backfill_posted(st) -> int:
+    """One-off pass: read a posted date off every known posting that lacks one.
+
+    Sources that publish a date on the results page already have it; this covers the
+    ones (Workday, UltiPro) that only show it on the detail page.
+    """
+    seen = st.get("seen", {})
+    todo = [(k, v) for k, v in seen.items()
+            if v.get("url") and not v.get("posted")
+            and classify(v.get("title", ""), v.get("location", ""), v.get("url", ""))[0]]
+    print("backfill: %d relevant postings with no posted date" % len(todo))
+    updates, hits = {}, 0
+    for k, v in todo:
+        try:
+            _body, got = posted_for(v["url"])
+        except Exception as e:
+            print("  skip %-40s %s" % ((v.get("title") or "")[:40], str(e)[:60]))
+            continue
+        if not got:
+            continue
+        v["posted"] = got
+        hits += 1
+        updates[k] = {"employer": v["employer"], "id": k.split("|", 1)[1],
+                      "title": v["title"], "location": v.get("location"),
+                      "url": v["url"], "posted": got}
+        print("  %-22s %-42s -> %s" % (v["employer"][:22], (v["title"] or "")[:42], got))
+    st["seen"] = seen
+    save_state(st)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print("found dates for %d of %d" % (hits, len(todo)))
+    if updates:
+        print("dashboard sync: %s" % push_snapshot(updates, now))
+    return 0
 
 
 def main() -> int:
@@ -1231,6 +1320,8 @@ def main() -> int:
         return selftest()
 
     st = load_state()
+    if "--backfill-posted" in args:
+        return backfill_posted(st)
     found, errors = collect(st.get("source_health", {}))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1284,6 +1375,8 @@ def main() -> int:
         entry = seen.get(key) or {"first_seen": now}
         entry.update({"title": job["title"], "employer": job["employer"],
                       "location": job["location"], "url": job["url"], "last_seen": now})
+        if job.get("posted"):
+            entry["posted"] = job["posted"]
         seen[key] = entry
     st["seen"] = seen
     st["runs"] = st.get("runs", 0) + 1
@@ -1327,22 +1420,30 @@ def main() -> int:
         return 0
 
     # Description-level screen: only for NEW matches (a handful per week), so this is cheap.
-    verified, dropped = [], []
+    # The same fetch doubles as the only cheap chance to read a posted date for sources
+    # whose results pages omit one.
+    verified, dropped, dated = [], [], {}
     for k in sorted(new_keys):
         job = relevant[k]
         if len(verified) >= 8:
             verified.append(k)
             continue
         try:
-            body = fetch_body(job["url"])
+            body, found_posted = posted_for(job["url"])
         except Exception:
-            body = ""
+            body, found_posted = "", None
+        if not job.get("posted") and found_posted:
+            job["posted"] = found_posted
+            st["seen"].setdefault(k, {})["posted"] = found_posted
+            dated[k] = job
         bad, phrase = detail_reject(body)
         if bad:
             dropped.append((k, phrase))
             st["seen"][k]["detail_rejected"] = phrase
         else:
             verified.append(k)
+    if dated:
+        st["web_sync"] = push_snapshot(dated, now)
     save_state(st)
 
     new_keys = verified

@@ -144,8 +144,9 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **89/89 pass** (60 title/location, 11 description, 3 Jefferson URL, 2 Penn table-layout, 13 posted-date) |
-| Baseline | **561 postings -> 27 relevant, 0 errors** |
+| `--selftest` | **95/95 pass** (68 title/location, 11 description, 3 Jefferson URL, 2 Penn table-layout, 11 posted-date) |
+| Baseline | **561 postings -> 55 relevant, 0 errors** |
+| Board population | 55 active rows, **15 with a real posted date**, 40 on the "found" fallback |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |
 | Silence when nothing new | `bytes=0` |
 | Alert rendering | 9 clean matches with title / employer / location / link |
@@ -165,6 +166,7 @@ $PY ~/.hermes/scripts/job_watch.py --dump      # relevant / new / rejected
 $PY ~/.hermes/scripts/job_watch.py --dump --dump-all
 $PY ~/.hermes/scripts/job_watch.py --selftest  # run filter tests after ANY rule change
 $PY ~/.hermes/scripts/job_watch.py --baseline  # silence everything currently live
+$PY ~/.hermes/scripts/job_watch.py --backfill-posted  # read posted dates for jobs lacking one
 
 cd ~/.hermes/hermes-agent
 ./hermes cron list

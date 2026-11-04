@@ -45,8 +45,9 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 89 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 95 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
+$PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 ```
 
 ## What counts as a match
@@ -74,12 +75,18 @@ license", "master's required", "LCSW", "position filled". This exists because Me
 
 ## Posted dates
 
-Each list page is scanned for the posting date (`Posted 3 days ago`, `11/02/2026`,
-`Nov 2, 2026`, `2026-11-02`, …) and normalised to `YYYY-MM-DD` in `parse_posted()`. Sources that
-don't publish a date on the results page send `null` — the board then falls back to "found
-<when the Pi first saw it>" rather than inventing a date. The dashboard stores it in
-`jobs.posted` and only overwrites a known date with a newer known date, so a partial page load
-can't erase it.
+Two passes, because sources differ:
+
+1. **Results page** — most cards carry nothing, but where a date is present (`Posted 3 days
+   ago`, `11/02/2026`, `Nov 2, 2026`) it is normalised to `YYYY-MM-DD`.
+2. **Detail page** — Workday ("posted on Posted 2 Days Ago"), UltiPro ("Posting Details Posted:
+   October 14, 2026") and NEOGOV ("Opening Date 08/17/2026") only show it inside the posting.
+
+Only 15 of the 55 live postings have a date, because Penn Medicine, Tower Health, ChristianaCare,
+WellSpan, AmeriHealth and Main Line Health do not publish one anywhere on the page. Those send
+`null` and the board shows "found <when the Pi first saw it>" instead of inventing a date.
+`--backfill-posted` re-walks known postings that still have no date, one page load each, and can
+be re-run after adding a source.
 
 ## Failure behaviour
 
