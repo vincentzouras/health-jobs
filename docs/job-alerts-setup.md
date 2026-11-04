@@ -97,7 +97,7 @@ already applied to don't come back as new.
 
 Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in
 [`web/`](../web/), deployed by Vercel on push to `main` with **Root Directory = `web`**.
-Repo: `github.com/vincentzouras/health-jobs`.
+Repo: `github.com/vincentzouras/pop-health-jobs`.
 `INGEST_TOKEN` is set in Vercel (production + preview) and in `~/.hermes/.env` on the Pi.
 
 ## What self-heals vs. what alerts you
