@@ -53,7 +53,8 @@ npm run dev
 - Each employer chip has its own colour. Employers are ranked by when the scan first saw them
   and stepped through the colour wheel by the golden angle, so a source keeps its colour as
   more are added, and neighbouring cards contrast hard (`app/employerColor.ts`).
-- A **Not for me** row is a filter-fix request, not a record: it needs a reason, and once the
+- A **Not for me** row is a filter-fix request, not a record: the reason is optional (blank means
+  an earlier dismissal covers it, and a **Reuse** button fills in the last one), and once the
   scanner has been corrected for that reason the row is deleted (`DELETE /api/jobs/:id`).
   Rejected postings that still pass `classify()` will reappear on the next scan, which is the
   signal that a filter did not actually cover them.
@@ -70,10 +71,14 @@ npm run dev
 
 ## Dismissal notes
 
-`Not for me` requires a reason before it commits. The text is capped at 400 characters, stored in
-`jobs.status_reason`, and shown on the archived card under **Why not**. Archived dismissals keep an
-**Add note** / **Edit note** button. `Applied` and **Restore** clear it (the column is kept in step
-with `status = 'ignored'`).
+`Not for me` takes an **optional** reason. The text is capped at 400 characters, stored in
+`jobs.status_reason`, and shown on the archived card under **Why not**. Leaving it blank means
+an earlier dismissal already covers it — there is no need to retype "RN license required" for ten
+bad rows in a row. When a previous reason exists, the box offers a one-click
+**Reuse “…”** so the row still gets tagged without any typing.
+
+Archived dismissals keep an **Add note** / **Edit note** button. `Applied` and **Restore** clear
+the note (the column is kept in step with `status = 'ignored'`).
 
 A not-applicable row is a **fix request, not history**. The reason is what the scanner gets
 corrected for; once it has been, the row is deleted outright via

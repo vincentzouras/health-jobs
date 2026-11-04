@@ -95,8 +95,10 @@ than guessing at what to filter next.
 **https://pop-health-jobs.vercel.app** — public, no login.
 
 Every run pushes its relevant matches to Postgres on Vercel. On the page she can hit
-**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me** — which requires a
-one-line reason ("RN license required", "not population health", …) before it commits.
+**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me** — which offers an
+optional one-line reason ("RN license required", "not population health", …). Blank is fine
+when an earlier dismissal already explains it, and a **Reuse** button fills in the last reason
+so a batch of similar bad rows costs one click each.
 
 Applied jobs stay in the **Archive** with a **Restore** button. A **Not for me** row is a
 *filter-fix request*, not history: the reason is what the scanner gets corrected for, and once

@@ -112,7 +112,7 @@ function ReasonComposer({
   onSubmit,
   busy,
   submitLabel,
-  required = false,
+  suggestion,
 }: {
   id: string;
   value: string;
@@ -121,18 +121,18 @@ function ReasonComposer({
   onSubmit: () => void;
   busy: boolean;
   submitLabel: string;
-  /** Dismissals need a reason: it is the only way the filter gets corrected. */
-  required?: boolean;
+  /** Most recent dismissal reason, offered as a one-click fill instead of retyping it. */
+  suggestion?: string | null;
 }) {
   const empty = !value.trim();
+  const reuse = suggestion && empty ? suggestion : null;
   return (
     <Stack spacing={1} sx={{ mt: 2 }}>
       <TextField
         id={`reason-${id}`}
         label="Why not?"
-        placeholder="e.g. RN license required, not population health, commute too far"
+        placeholder="Optional — e.g. RN license required, not population health, commute too far"
         autoFocus
-        required={required}
         fullWidth
         multiline
         minRows={2}
@@ -146,17 +146,22 @@ function ReasonComposer({
             onCancel();
           } else if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (!(required && empty)) onSubmit();
+            onSubmit();
           }
         }}
       />
-      <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-        <Typography variant="caption" color={required && empty ? 'warning.main' : 'text.secondary'}>
-          {required && empty ? 'A reason is required' : `${value.trim().length}/${REASON_MAX}`}
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <Typography variant="caption" color="text.secondary">
+          {empty ? 'Blank means an earlier dismissal already covers it' : `${value.trim().length}/${REASON_MAX}`}
         </Typography>
+        {reuse && (
+          <Button size="small" onClick={() => onChange(reuse)} sx={{ minHeight: 0, py: 0 }}>
+            Reuse “{reuse.length > 32 ? `${reuse.slice(0, 32)}…` : reuse}”
+          </Button>
+        )}
         <Box sx={{ flex: 1 }} />
         <Button onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" disabled={busy || (required && empty)} onClick={onSubmit}>
+        <Button variant="contained" disabled={busy} onClick={onSubmit}>
           {submitLabel}
         </Button>
       </Stack>
@@ -312,6 +317,16 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     applied: data.archive.filter((j) => j.status === 'applied').length,
     ignored: data.archive.filter((j) => j.status === 'ignored').length,
   };
+
+  // The newest dismissal reason, offered as a one-click fill: a batch of ten bad rows usually
+  // shares one reason, and retyping it ten times is the wrong tax.
+  const lastReason = useMemo(() => {
+    const withReason = data.archive.filter((j) => j.status === 'ignored' && j.statusReason);
+    const newest = withReason.sort(
+      (a, b) => new Date(b.statusChangedAt ?? 0).getTime() - new Date(a.statusChangedAt ?? 0).getTime(),
+    )[0];
+    return newest?.statusReason ?? null;
+  }, [data.archive]);
 
   const stamps = [
     { label: 'To review', value: counts.active },
@@ -489,7 +504,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       onSubmit={() => void confirmDismiss(job.id)}
                       busy={!!busy[job.id]}
                       submitLabel="Dismiss"
-                      required
+                      suggestion={lastReason}
                     />
                   )}
                 </CardContent>
