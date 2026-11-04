@@ -257,8 +257,15 @@ URL_REJECT = re.compile(
 )
 
 
-def classify(title: str, location: str = "", url: str = "") -> tuple[bool, str]:
-    """Return (is_relevant, reason). Deterministic - this is the whole filter."""
+def classify(title: str, location: str = "", url: str = "", derived: bool = False) -> tuple[bool, str]:
+    """Return (is_relevant, reason). Deterministic - this is the whole filter.
+
+    `derived` marks a location read off the posting itself rather than off a result card.
+    Those are real towns ("Westtown, PA") that the hand-curated city list will never fully
+    cover, so for them the test is "PA/DE and not known to be out of area" instead of
+    "in the allow-list" - the employer's footprint already bounds the risk, and a wrong
+    city is visible on the card with its own Delete/not-applicable path.
+    """
     t = (title or "").strip()
     if len(t) < 4:
         return False, "empty title"
@@ -280,6 +287,8 @@ def classify(title: str, location: str = "", url: str = "") -> tuple[bool, str]:
     if FAR_DE.search(loc):
         return False, "beyond Wilmington (Kent/Sussex DE)"
     if not _city_in_corridor(loc):
+        if derived and re.search(r",\s*(?:PA|Pennsylvania|DE|Delaware)$", loc, re.I):
+            return True, "ok (city from posting)"
         return False, "not an allowed city"
     return True, "ok"
 
@@ -1317,6 +1326,28 @@ def selftest() -> int:
                 fails += 1
         print("%-14s want=%-5s got=%-5s %-58s | %s" % (status, want, got, title[:58], reason))
 
+    # Cities read off the posting: allowed if PA/DE and not known-far, because the curated
+    # city list can never cover every township a health system posts in.
+    derived_cases = [
+        ("Care Coordinator", "Westtown, PA", True),
+        ("Social Services Aide III, CYF", "Westtown, PA", True),
+        ("Care Coordinator", "Dillsburg, PA", True),
+        ("Care Coordinator", "Chambersburg, PA", False),
+        ("Care Coordinator", "Pittsburgh, PA", False),
+        ("Care Coordinator", "Princeton, NJ", False),
+        ("Care Coordinator", "Dover, DE", False),
+        # a source's synthetic default stays valid
+        ("Care Coordinator", "Southeastern PA", True),
+    ]
+    print("\n--- derived city (from the posting) ---")
+    dvfails = 0
+    for title, loc, want in derived_cases:
+        got, reason = classify(title, loc, derived=True)
+        ok = got == want
+        if not ok:
+            dvfails += 1
+        print("%-6s want=%-5s got=%-5s %-40s | %s" % ("PASS" if ok else "FAIL", want, got, loc[:40], reason))
+
     print("\n--- description screen (detail_reject) ---")
     detail_corpus = [
         ("Must have Pennsylvania RN license! Melmark Overview", True),
@@ -1469,12 +1500,12 @@ def selftest() -> int:
             lfails += 1
         print("%-6s %-46s -> %r" % ("PASS" if ok else "FAIL", body[:46].replace("\n", " "), got))
 
-    print("\n%d title failures, %d detail failures, %d jefferson failures, %d penn failures, "
-          "%d posted failures, %d location failures, %d cases total"
-          % (fails, dfails, jfails, pfails, postfails, lfails,
-             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases)
-             + len(bcases) + len(lcases)))
-    return 0 if (fails == 0 and dfails == 0 and jfails == 0 and pfails == 0
+    print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
+          "%d penn failures, %d posted failures, %d location failures, %d cases total"
+          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails,
+             len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
+             + len(dcases) + len(bcases) + len(lcases)))
+    return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
                  and postfails == 0 and lfails == 0) else 1
 
 
@@ -1535,20 +1566,22 @@ def backfill_location(st) -> int:
                  or v.get("location") == defaults.get(v.get("employer")))
             and classify(v.get("title", ""), v.get("location", ""), v.get("url", ""))[0]]
     print("backfill: %d postings with a guessed city" % len(todo))
-    updates, hits, moved = {}, 0, []
+    updates, hits, moved, empty = {}, 0, [], 0
     for k, v in todo:
         try:
             body, _posted = posted_for(v["url"])
         except Exception as e:
             print("  skip %-40s %s" % ((v.get("title") or "")[:40], str(e)[:60]))
             continue
+        if not body:
+            empty += 1
         real = location_from_body(body)
         if not real:
             print("  %-22s %-40s -> no city on page" % (v["employer"][:22], (v.get("title") or "")[:40]))
             continue
         known[k] = real
         hits += 1
-        ok, why = classify(v.get("title", ""), real, v.get("url", ""))
+        ok, why = classify(v.get("title", ""), real, v.get("url", ""), derived=True)
         print("  %-22s %-38s -> %-20s %s"
               % (v["employer"][:22], (v.get("title") or "")[:38], real, "keep" if ok else "DROP (%s)" % why))
         if ok:
@@ -1560,6 +1593,9 @@ def backfill_location(st) -> int:
     save_state(st)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print("resolved %d of %d" % (hits, len(todo)))
+    if empty:
+        print("WARNING: %d detail page(s) returned no text - browser problem, not 'no city'"
+              % empty)
     if updates:
         print("dashboard sync: %s" % push_snapshot(updates, now))
     for emp, title, real in moved:
@@ -1596,10 +1632,11 @@ def main() -> int:
     verified_loc = st.get("locations", {})
     for key, job in found.items():
         # A city read off a detail page beats a source default, permanently.
-        if key in verified_loc:
+        from_posting = key in verified_loc
+        if from_posting:
             job["location"] = verified_loc[key]
             job["location_guessed"] = False
-        ok, reason = classify(job["title"], job["location"], job.get("url", ""))
+        ok, reason = classify(job["title"], job["location"], job.get("url", ""), derived=from_posting)
         (relevant if ok else rejected)[key] = dict(job, reason=reason)
 
     seen = st.get("seen", {})
@@ -1674,7 +1711,7 @@ def main() -> int:
                 job["location_guessed"] = False
                 # Persist, or the next run re-derives the guess from the card and overwrites it.
                 st.setdefault("locations", {})[k] = real
-                ok, why = classify(job["title"], real, job.get("url", ""))
+                ok, why = classify(job["title"], real, job.get("url", ""), derived=True)
                 if not ok:
                     dropped.append((k, "real location %s (%s)" % (real, why)))
                     st["seen"].setdefault(k, {})["location_rejected"] = real
