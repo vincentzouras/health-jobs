@@ -196,7 +196,7 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **120/120 pass** (73 title/location, 11 description, 3 Jefferson URL, 4 Penn table-layout, 14 posted-date, 9 location-from-detail) |
+| `--selftest` | **130/130 pass** (73 title/location, 8 derived-city, 11 description, 3 Jefferson URL, 4 Penn table-layout, 14 posted-date, 9 location-from-detail) |
 | Baseline | **561 postings -> 55 relevant, 0 errors** |
 | Board population | 55 active rows, **15 with a real posted date**, 40 on the "found" fallback |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |

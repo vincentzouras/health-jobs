@@ -58,7 +58,7 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 120 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 130 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
@@ -92,6 +92,12 @@ never reaches the board. A real city that is out of corridor drops the posting a
 
 `--backfill-location` re-reads the real city for postings recorded before this existed and lists
 anything that turns out to be out of corridor.
+
+A derived city is judged differently from a card's city: `classify(..., derived=True)` accepts any
+PA/DE town that is not known to be out of area, because the curated city list can never cover every
+township a health system posts in (Chester County posts in Westtown, York County in Dillsburg, and
+both were being dropped as "not an allowed city"). The employer's footprint bounds the risk, the
+real city is printed on the card, and anything wrong goes through the normal not-applicable path.
 
 ## What counts as a match
 
