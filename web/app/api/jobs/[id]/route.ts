@@ -1,0 +1,32 @@
+import { NextResponse } from 'next/server';
+import { ensureSchema, pool, type Status } from '@/lib/db';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const VALID: Status[] = ['new', 'applied', 'ignored'];
+
+export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  let body: { status?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
+  }
+  const status = body.status as Status;
+  if (!VALID.includes(status)) {
+    return NextResponse.json({ error: `status must be one of ${VALID.join(', ')}` }, { status: 400 });
+  }
+
+  await ensureSchema();
+  const { rowCount } = await pool().query(
+    `UPDATE jobs
+        SET status = $2,
+            status_changed_at = CASE WHEN $2 = 'new' THEN NULL ELSE now() END
+      WHERE id = $1`,
+    [id, status],
+  );
+  if (rowCount === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  return NextResponse.json({ ok: true, id, status });
+}

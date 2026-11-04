@@ -9,7 +9,7 @@ _Prepared November 2026_
 
 **Answer to "hospital administration?"** — Yes, but not by applying to "hospital administration." Administrative fellowships (the classic hospital-admin on-ramp) require an MHA/MBA and are out of reach this cycle. The bachelor's-level entry door into that world is **operations coordinator / practice manager / access center / credentialing / quality improvement** — and it pays $50–70k at the systems in your two corridors. That is a real, achievable first job that leads to admin later, and most of these employers will **pay for her MHA or MPH part-time** once she's in.
 
-**The single highest-ROI insight:** her CNA + scribe hours are worth more than her major in this job market. Scribe work = clinical vocabulary + EHR fluency + provider-adjacent credibility. That combination makes her *unusually* competitive for **clinical research coordinator**, **quality improvement**, and **care coordination** roles — three tracks that pay $50–70k straight out of undergrad and have clear 5-year ladders. Coordinator/CHW roles are where she gets hired; analyst and manager roles are where she goes at 25–27.
+**The single highest-ROI insight:** her CNA + scribe hours are worth more than her major in this job market. Scribe work = clinical vocabulary + EHR fluency + provider-adjacent credibility. That combination makes her *unusually* competitive for **care coordination**, **health education/community health**, and **quality improvement** roles — three tracks that pay $50–70k straight out of undergrad and have clear 5-year ladders. Coordinator/CHW roles are where she gets hired; analyst and manager roles are where she goes at 25–27. *(Clinical research also hires readily with this profile, but it's deliberately de-prioritized — see the note in §1.)*
 
 **Geography:** Corridor A (Downingtown/West Chester/Wilmington) has roughly 3–4× the relevant job volume of Corridor B, plus pharma, CRO, and payer employers that York simply doesn't have. Corridor B is viable and cheaper, but only because Hershey/Harrisburg/Lancaster are within 35–45 minutes. **Recommendation: target Corridor A as primary, keep Corridor B live as a fallback.**
 
@@ -21,13 +21,15 @@ Her degree opens ~5 genuinely different career tracks with different job titles,
 
 | | Track | What it is | Entry title | Pay at entry | 5-yr ceiling |
 |---|---|---|---|---|---|
-| 1 | **Care coordination / population health ops** | The literal use of her degree — panel management, gap closure, high-risk patient outreach | Care Coordinator, Patient Navigator, Population Health Associate | $44–58k | $70–85k (Coordinator → Program Manager) |
-| 2 | **Clinical research** | Running trials/studies at academic centers, CROs, pharma | Clinical Research Coordinator (CRC), Regulatory Coordinator, Research Assistant | $52–66k | $80–105k (Sr CRC → Clinical Trial Manager) |
-| 3 | **Quality / data / value-based care** | Making the numbers move; the highest-ceiling track | Quality Improvement Coordinator, Population Health Analyst, HEDIS/Quality Analyst | $55–70k | $95–130k (Analyst → Manager → Director) |
+| 1 | **Care coordination / population health ops** ⭐ | The literal use of her degree — panel management, gap closure, high-risk patient outreach | Care Coordinator, Patient Navigator, Population Health Associate | $44–58k | $70–85k (Coordinator → Program Manager) |
+| 2 | **Quality / data / value-based care** | Making the numbers move; the highest-ceiling track | Quality Improvement Coordinator, Population Health Analyst, HEDIS/Quality Analyst | $55–70k | $95–130k (Analyst → Manager → Director) |
+| 3 | **Public health / community / nonprofit** ⭐ | County & state health departments, FQHCs, nonprofits | CHW, Health Educator, Program Coordinator, Environmental Health Specialist | $42–62k | $70–90k (grant-dependent, mission-driven) |
 | 4 | **Health system administration & operations** | The "hospital administration" answer | Operations Coordinator, Practice Manager, Credentialing Specialist, Access Center | $48–68k | $95–140k (needs MHA around year 4–6) |
-| 5 | **Public health / community / nonprofit** | County & state health departments, FQHCs, nonprofits | CHW, Health Educator, Program Coordinator, Environmental Health Specialist | $42–62k | $70–90k (grant-dependent, mission-driven) |
+| 5 | **Clinical research** *(de-prioritized)* | Running trials/studies at academic centers, CROs, pharma | Clinical Research Coordinator (CRC), Regulatory Coordinator, Research Assistant | $52–66k | $80–105k (Sr CRC → Clinical Trial Manager) |
 
-**Honest calibration:** with a BS and no MPH, she will *not* be competitive for "Population Health Analyst" at a big system against MPH grads — but she *is* competitive at payers, FQHCs, and CROs where the credential bar is lower and the volume of openings is higher. Track 2 (clinical research) is her best pay-to-competitiveness ratio because her scribe experience is directly relevant and the field is chronically short-staffed. Track 3 is her best long-term bet if she's willing to add SQL.
+⭐ = the two tracks the live-postings search shows the most openings and the best degree match in.
+
+**Honest calibration:** with a BS and no MPH, she will *not* be competitive for "Population Health Analyst" at a big system against MPH grads — but she *is* competitive at payers, FQHCs, nonprofits, and county health departments where the credential bar is lower and the volume of openings is higher. **Track 1 (care coordination) is her best volume-to-fit ratio; Track 5 (community health / public health) is her best odds per posting; Track 3 is her best long-term bet if she's willing to add SQL.** Track 2 (clinical research) remains the fastest-paying option but is de-prioritized per her preference — it's kept below and in the appendix of `live-openings.md` for reference only.
 
 ---
 
@@ -43,7 +45,7 @@ Her degree opens ~5 genuinely different career tracks with different job titles,
 | **Health Educator / Health Promotion Specialist** | $48–66k (PA median ~$58k) | Bachelor's; **CHES certification strongly preferred** | Get CHES — see §6. |
 | **Community Outreach Coordinator** | $45–58k | Bachelor's; bilingual Spanish is a large advantage | Nonprofits + FQHCs. |
 
-### Track 2 — Clinical Research *(best fit for her resume)*
+### Track 2 — Clinical Research *(DE-PRIORITIZED — reference only)*
 | Title | Typical pay | What they want | Notes |
 |---|---|---|---|
 | **Clinical Research Coordinator (CRC)** | **$49–65k** (Philadelphia avg ~$60k, $24–29/hr) | Bachelor's (health/science preferred); 1 yr healthcare exposure often *preferred not required*; many train on the job | Her scribe + CNA experience **directly substitutes** for the "healthcare exposure" requirement. Highest-leverage application she can make. |
@@ -255,14 +257,14 @@ Three specific framings that win interviews:
 ## 8. Execution plan
 
 **Week 1–2 — Infrastructure**
-- Rewrite resume to two versions: *clinical research* and *operations/quality*. Lead with the CNA/scribe hours as quantified experience.
+- Rewrite resume to two versions: *care coordination / population health* and *community health / health education*. Lead with the CNA/scribe hours as quantified clinical experience. (A third *clinical research* version only if she opts into that track.)
 - Create LinkedIn "Open to Work" (recruiters-only), photo, headline = the positioning line above.
 - Build the 12 employer alerts from §5 + 13 saved search strings.
 - Register on Handshake; book a Lehigh career center resume review.
 - Set USAJobs saved searches for Coatesville VA + Wilmington VA.
 
 **Week 3–6 — Volume with a filter**
-- **Target 8–12 applications/week**, but weighted: 5 CRC/research, 3 care coordinator/population health, 2 ops/admin, 1–2 public health/nonprofit.
+- **Target 8–12 applications/week**, but weighted: **5 care coordination / population health, 4 community health / health education / public health, 2 quality-ops-admin, 1 nonprofit.** Research roles are opt-in only, not part of the weekly quota.
 - Prioritize postings less than 7 days old. Health system postings often close at 30–50 applicants.
 - Customize the top 3 lines of every resume summary — no mass blasting.
 - Start CHES prep or SQL in parallel.
@@ -296,18 +298,18 @@ Three specific framings that win interviews:
 
 | # | Employer | Role | Why first |
 |---|---|---|---|
-| 1 | ChristianaCare | Community Health Patient Navigator / CHW | Published pay band $54–81k; bachelor's preferred; 40 min from Downingtown |
-| 2 | Penn Medicine (Chester County Hospital / Exton) | Population Health Associate / Care Coordinator | Exact degree match; 20 min away |
-| 3 | Penn State Health Hershey | Clinical Research Coordinator | Best CRC market in either corridor; 45 min from York |
-| 4 | IQVIA (King of Prussia) | Clinical Trial / Clinical Data Coordinator | Hires new grads in volume; ~$55–65k |
-| 5 | ChristianaCare Value Institute | Research Assistant / Coordinator | Delaware's health services research arm |
-| 6 | Nemours (Wilmington) | Care Coordinator / Research Coordinator | Pediatric population health fit |
+| 1 | ChristianaCare | Community Health Patient Navigator / CHW / Health Coach | Published pay band $54–81k; bachelor's preferred; 40 min from Downingtown |
+| 2 | Penn Medicine (West Chester / Parkesburg / Bala Cynwyd) | Population Health Associate / Patient Navigator / Community Health Educator | Exact degree match; three sites within 30 min |
+| 3 | LCH Health & Community Services (West Grove) | Care Coordinator / MAT Coordinator | $90–100k posted against a bachelor's in Public Health; 20 min away |
+| 4 | PHMC (Philadelphia) | Program Liaison / Program Coordinator | Region's largest public-health nonprofit; degree language matches |
+| 5 | Main Line Health (Paoli / Newtown Square) | Care Coordination Support / Patient Outreach | 18–25 min away; small-system advantage |
+| 6 | Nemours (Wilmington) | Care Coordinator / Educational Outreach | Pediatric population health fit |
 | 7 | Family First Health (York) | Community Health Worker / Health Educator | Best cultural fit in Corridor B |
 | 8 | WellSpan Health (York) | CHW / Patient Navigator / Care Coordinator | Highest volume in Corridor B |
 | 9 | Chester County Health Department | Public Health Program / Environmental Health | Low applicant count, pension |
 | 10 | Independence Blue Cross | Population Health Analyst / Care Coordinator | Where the degree's name is on the org chart |
-| 11 | Main Line Health (Paoli) | Quality Improvement Coordinator | 18 min away, small-system advantage |
-| 12 | Coatesville VA Medical Center | Program Support / Research / Health Tech | ~20 min away; federal benefits |
-| 13 | UPMC Memorial (York) | Care Coordinator / Practice Manager | Second system in York |
-| 14 | PHMC (Philadelphia) | Program Coordinator | Region's largest public health nonprofit |
+| 11 | ACLAMO (Norristown) | Community Resource & Advocate Specialist | Degree requirement is her major verbatim |
+| 12 | Coatesville VA Medical Center | Program Support / Health Tech | ~20 min away; federal benefits |
+| 13 | UPMC (Memorial York / Camp Hill) | Care Coordinator / Patient Financial Coordinator | Second system in both corridors |
+| 14 | Montgomery County (Norristown) | TB Outreach Worker / Early Intervention Coordinator | Genuine public-health roles, few applicants |
 | 15 | Tower Health (Phoenixville) | Operations / Quality Coordinator | Lowest competition per posting |
