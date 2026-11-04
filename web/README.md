@@ -46,6 +46,9 @@ npm run dev
 
 ## Notes
 
+- The UI is [Material UI](https://mui.com/material-ui/) v9 with the Next.js app-router cache
+  provider (`app/Providers.tsx`, `app/theme.ts`). There is no hand-written stylesheet — layout
+  comes from `Stack`/`Container` and spacing from `sx`.
 - The table is created automatically on first request (`CREATE TABLE IF NOT EXISTS`).
 - The UI polls `/api/jobs` every 5 minutes and has a manual Refresh button.
 - A job whose `last_seen` is older than 7 days gets a **may be closed** badge rather than

@@ -43,8 +43,9 @@ watcher/
 web/
   app/                  Next.js app router
     page.tsx            server component: loads jobs from Postgres
-    JobBoard.tsx        client component: search, filters, status buttons, archive
-    globals.css
+    JobBoard.tsx        client component (Material UI): search, filters, status buttons, archive
+    theme.ts            MUI theme (Roboto, flat buttons)
+    Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)
     api/jobs/           GET active + archive
     api/jobs/[id]/      PATCH status

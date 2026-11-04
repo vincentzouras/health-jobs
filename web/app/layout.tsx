@@ -1,21 +1,27 @@
 import type { Metadata, Viewport } from 'next';
-import './globals.css';
+import type { ReactNode } from 'react';
+import { AppRouterCacheProvider } from '@mui/material-nextjs/v15-appRouter';
+import Providers from './Providers';
 
 export const metadata: Metadata = {
   title: 'Population Health Jobs',
-  description: 'Population health roles in the Downingtown/Wilmington and York corridors.',
+  description: 'Population health openings in the Downingtown, Wilmington, and York areas.',
 };
 
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#f6f7f9',
+  themeColor: '#ffffff',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppRouterCacheProvider>
+          <Providers>{children}</Providers>
+        </AppRouterCacheProvider>
+      </body>
     </html>
   );
 }

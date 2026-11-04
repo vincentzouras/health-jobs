@@ -1,6 +1,22 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Container,
+  Divider,
+  Link,
+  MenuItem,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
 import type { Job, Status } from '@/lib/db';
 
 interface ApiPayload {
@@ -61,7 +77,20 @@ function postedRank(job: Job): number {
   return Number.isNaN(t) ? -Infinity : t;
 }
 
-/** Shared note box: opened by "Not for me" on a live job and by "Add/Edit note" in the archive. */
+/** "Philadelphia, PA · Posted Nov 3 · Found 1 hr ago" */
+function metaLine(job: Job, rel: (iso: string | null) => string, marked = false): string {
+  const posted = job.posted ? fmtPosted(job.posted) : '';
+  return [
+    job.location,
+    posted && `Posted ${posted}`,
+    `Found ${rel(job.firstSeen)}`,
+    marked && job.statusChangedAt && `Marked ${rel(job.statusChangedAt)}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/** Note box: opened by "Not for me" on a live job and by "Add/Edit note" in the archive. */
 function ReasonComposer({
   id,
   value,
@@ -80,19 +109,19 @@ function ReasonComposer({
   submitLabel: string;
 }) {
   return (
-    <div className="dismisser">
-      <label className="sr" htmlFor={`reason-${id}`}>
-        Why is this not a fit?
-      </label>
-      <textarea
+    <Stack spacing={1} sx={{ mt: 2 }}>
+      <TextField
         id={`reason-${id}`}
-        className="reason"
-        rows={2}
+        label="Why not?"
+        placeholder="Optional — e.g. RN license required, not population health, commute too far"
         autoFocus
-        maxLength={REASON_MAX}
-        placeholder="Optional note — e.g. “RN license required”, “not population health”, “commute too far”"
+        fullWidth
+        multiline
+        minRows={2}
+        size="small"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        slotProps={{ htmlInput: { maxLength: REASON_MAX } }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') {
             e.preventDefault();
@@ -103,18 +132,17 @@ function ReasonComposer({
           }
         }}
       />
-      <div className="dismisser-actions">
-        <span className="hint">
-          {value.trim().length}/{REASON_MAX} · saved with the archive so the filters can be retuned later
-        </span>
-        <button className="btn ghost" onClick={onCancel}>
-          Cancel
-        </button>
-        <button className="btn" disabled={busy} onClick={onSubmit}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+        <Typography variant="caption" color="text.secondary">
+          {value.trim().length}/{REASON_MAX}
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        <Button onClick={onCancel}>Cancel</Button>
+        <Button variant="contained" disabled={busy} onClick={onSubmit}>
           {submitLabel}
-        </button>
-      </div>
-    </div>
+        </Button>
+      </Stack>
+    </Stack>
   );
 }
 
@@ -127,13 +155,12 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [mounted, setMounted] = useState(false);
-  /** Job whose "not for me" note box is open, plus its unsaved text. */
   const [dismissing, setDismissing] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Relative times and local-time strings must not be rendered during SSR, or the
-  // server and client markup disagree (React hydration error #418).
+  // Relative times must not be rendered during SSR, or the server and client
+  // markup disagree (React hydration error #418).
   useEffect(() => setMounted(true), []);
   const rel = (iso: string | null) => (mounted ? timeAgo(iso) : fmtUTC(iso));
 
@@ -198,9 +225,9 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     [refresh],
   );
 
-  const openDismiss = useCallback((id: string, initial = '') => {
+  const openDismiss = useCallback((id: string, initialText = '') => {
     setDismissing((cur) => (cur === id ? null : id));
-    setReasonDraft(initial);
+    setReasonDraft(initialText);
   }, []);
 
   const closeDismiss = useCallback(() => {
@@ -252,210 +279,159 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     ignored: data.archive.filter((j) => j.status === 'ignored').length,
   };
 
+  const stamps = [
+    { label: 'To review', value: counts.active },
+    { label: 'Applied', value: counts.applied },
+    { label: 'Not applicable', value: counts.ignored },
+  ];
+
   return (
-    <main className="wrap">
-      <header className="header">
-        <h1>Population Health Jobs</h1>
-        <div className="sub">
-          Downingtown / Wilmington / York areas
-          <br />
-          Last checked <strong>{rel(data.meta.lastIngest)}</strong>
-        </div>
+    <Container component="main" maxWidth="md" sx={{ py: 6 }}>
+      <Stack spacing={3}>
+        <Stack spacing={0.5}>
+          <Typography variant="h5" component="h1" sx={{ fontWeight: 500 }}>
+            Population Health Jobs
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Downingtown / Wilmington / York areas
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Last checked {rel(data.meta.lastIngest)}
+          </Typography>
+        </Stack>
+
         {!data.meta.db && (
-          <div className="banner err">
+          <Alert severity="warning">
             No database connected yet. Add <code>POSTGRES_URL</code> in Vercel → Settings →
             Environment Variables, then redeploy.
-          </div>
+          </Alert>
         )}
-        {data.error && <div className="banner err">Database error: {data.error}</div>}
-      </header>
+        {data.error && <Alert severity="error">Database error: {data.error}</Alert>}
 
-      <section className="stats">
-        <div className="stat new">
-          <div className="n">{counts.active}</div>
-          <div className="l">To review</div>
-        </div>
-        <div className="stat applied">
-          <div className="n">{counts.applied}</div>
-          <div className="l">Applied</div>
-        </div>
-        <div className="stat ignored">
-          <div className="n">{counts.ignored}</div>
-          <div className="l">Not applicable</div>
-        </div>
-      </section>
-
-      <div className="toolbar">
-        <input
-          type="search"
-          placeholder="Search title, employer, or city…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          aria-label="Search jobs"
-        />
-        <select value={employer} onChange={(e) => setEmployer(e.target.value)} aria-label="Filter by employer">
-          <option value="all">All employers</option>
-          {employers.map((e) => (
-            <option key={e} value={e}>
-              {e}
-            </option>
+        <Stack direction="row" spacing={2}>
+          {stamps.map((s) => (
+            <Paper key={s.label} variant="outlined" sx={{ flex: 1, p: 2 }}>
+              <Typography variant="h6" component="p">
+                {s.value}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {s.label}
+              </Typography>
+            </Paper>
           ))}
-        </select>
-        <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort by">
-          <option value="posted">Newest posted</option>
-          <option value="found">Recently found</option>
-          <option value="employer">By employer</option>
-          <option value="title">By title</option>
-        </select>
-        <div className="spacer" />
-        <button className="btn" onClick={() => void refresh(true)} disabled={refreshing}>
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
-      </div>
+        </Stack>
 
-      {filtered.length === 0 ? (
-        <div className="empty">
-          <strong>{data.active.length === 0 ? 'No jobs waiting for review' : 'Nothing matches that filter'}</strong>
-          {data.active.length === 0
-            ? 'The Pi posts new matches after its 8:00 AM run. Anything you applied to or dismissed lives in the archive below.'
-            : 'Try clearing the search box or switching the employer filter.'}
-        </div>
-      ) : (
-        <div className="list">
-          {filtered.map((job) => (
-            <article className="card" key={job.id}>
-              <div className="body">
-                <h3 className="title">
-                  {job.url ? (
-                    <a href={job.url} target="_blank" rel="noopener noreferrer">
-                      {job.title}
-                    </a>
-                  ) : (
-                    job.title
-                  )}
-                </h3>
-                <div className="meta">
-                  <span className="pill employer">{job.employer}</span>
-                  {job.location && <span>{job.location}</span>}
-                  {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
-                  <span title="When the scan first saw this posting.">· found {rel(job.firstSeen)}</span>
-                  {mounted && isStale(job) && (
-                    <span className="pill stale" title="Not returned by the last few scans">
-                      may be closed
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="actions">
-                <div className="row">
-                  <a
-                    className="btn primary"
-                    href={job.url || '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ textAlign: 'center', textDecoration: 'none' }}
-                  >
-                    Apply ↗
-                  </a>
-                </div>
-                <div className="row">
-                  <button
-                    className="btn green"
-                    disabled={!!busy[job.id]}
-                    onClick={() => void setStatus(job.id, 'applied')}
-                  >
-                    Applied
-                  </button>
-                  <button
-                    className="btn ghost"
-                    disabled={!!busy[job.id]}
-                    aria-expanded={dismissing === job.id}
-                    onClick={() => openDismiss(job.id)}
-                  >
-                    Not for me
-                  </button>
-                </div>
-              </div>
-              {dismissing === job.id && (
-                <ReasonComposer
-                  id={job.id}
-                  value={reasonDraft}
-                  onChange={setReasonDraft}
-                  onCancel={closeDismiss}
-                  onSubmit={() => void confirmDismiss(job.id)}
-                  busy={!!busy[job.id]}
-                  submitLabel="Dismiss"
-                />
-              )}
-            </article>
-          ))}
-        </div>
-      )}
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+          <TextField
+            size="small"
+            placeholder="Search title, employer, or city…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            sx={{ flex: '1 1 220px' }}
+            slotProps={{ htmlInput: { 'aria-label': 'Search jobs' } }}
+          />
+          <TextField
+            select
+            size="small"
+            label="Employer"
+            value={employer}
+            onChange={(e) => setEmployer(e.target.value)}
+            sx={{ minWidth: 180 }}
+          >
+            <MenuItem value="all">All employers</MenuItem>
+            {employers.map((e) => (
+              <MenuItem key={e} value={e}>
+                {e}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            select
+            size="small"
+            label="Sort by"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            sx={{ minWidth: 170 }}
+          >
+            <MenuItem value="posted">Newest posted</MenuItem>
+            <MenuItem value="found">Recently found</MenuItem>
+            <MenuItem value="employer">By employer</MenuItem>
+            <MenuItem value="title">By title</MenuItem>
+          </TextField>
+          <Button variant="outlined" onClick={() => void refresh(true)} disabled={refreshing}>
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </Stack>
 
-      {data.archive.length > 0 && (
-        <>
-          <div className="archive-head">
-            <h2>Archive</h2>
-            <span className="count">
-              {data.archive.length} job{data.archive.length === 1 ? '' : 's'}
-            </span>
-            <button className="btn ghost" onClick={() => setShowArchive((v) => !v)}>
-              {showArchive ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          {showArchive && (
-            <div className="list">
-              {data.archive.map((job) => (
-                <article className="card" key={job.id}>
-                  <div className="body">
-                    <h3 className="title">
-                      {job.url ? (
-                        <a href={job.url} target="_blank" rel="noopener noreferrer">
-                          {job.title}
-                        </a>
-                      ) : (
-                        job.title
-                      )}
-                    </h3>
-                    <div className="meta">
-                      <span className="pill employer">{job.employer}</span>
-                      <span className={`pill ${job.status}`}>
-                        {job.status === 'applied' ? 'Applied' : 'Not applicable'}
-                      </span>
-                      {job.location && <span>{job.location}</span>}
-                      {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
-                      <span title="When the scan first saw this posting.">· found {rel(job.firstSeen)}</span>
-                      {job.statusChangedAt && <span>· marked {rel(job.statusChangedAt)}</span>}
-                    </div>
-                    {job.statusReason && (
-                      <div className="reason-note">
-                        <span className="reason-label">Why not</span>
-                        {job.statusReason}
-                      </div>
-                    )}
-                  </div>
-                  <div className="actions">
-                    <div className="row">
-                      <button
-                        className="btn"
-                        disabled={!!busy[job.id]}
-                        onClick={() => void setStatus(job.id, 'new')}
+        {filtered.length === 0 ? (
+          <Paper variant="outlined" sx={{ py: 6, px: 3, textAlign: 'center' }}>
+            <Typography variant="subtitle1" component="p" gutterBottom>
+              {data.active.length === 0 ? 'No jobs waiting for review' : 'Nothing matches that filter'}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {data.active.length === 0
+                ? 'New matches land after the 8:00 AM scan. Anything you applied to or dismissed lives in the archive below.'
+                : 'Try clearing the search box or switching the employer filter.'}
+            </Typography>
+          </Paper>
+        ) : (
+          <Stack spacing={2}>
+            {filtered.map((job) => (
+              <Card key={job.id} variant="outlined">
+                <CardContent>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ justifyContent: 'space-between' }}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 500 }}>
+                        {job.url ? (
+                          <Link href={job.url} target="_blank" rel="noopener noreferrer" underline="hover" color="inherit">
+                            {job.title}
+                          </Link>
+                        ) : (
+                          job.title
+                        )}
+                      </Typography>
+                      <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <Chip size="small" label={job.employer} variant="outlined" />
+                        <Typography variant="body2" color="text.secondary">
+                          {metaLine(job, rel)}
+                        </Typography>
+                        {mounted && isStale(job) && (
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            label="May be closed"
+                            title="Not returned by the last few scans"
+                          />
+                        )}
+                      </Stack>
+                    </Box>
+                    <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
+                      <Button
+                        variant="contained"
+                        size="small"
+                        component="a"
+                        href={job.url || undefined}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        disabled={!job.url}
                       >
-                        Restore
-                      </button>
-                    </div>
-                    {job.status === 'ignored' && (
-                      <div className="row">
-                        <button
-                          className="btn ghost"
-                          aria-expanded={dismissing === job.id}
-                          onClick={() => openDismiss(job.id, job.statusReason ?? '')}
-                        >
-                          {job.statusReason ? 'Edit note' : 'Add note'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                        Apply
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        color="success"
+                        disabled={!!busy[job.id]}
+                        onClick={() => void setStatus(job.id, 'applied')}
+                      >
+                        Applied
+                      </Button>
+                      <Button size="small" disabled={!!busy[job.id]} onClick={() => openDismiss(job.id)}>
+                        Not for me
+                      </Button>
+                    </Stack>
+                  </Stack>
                   {dismissing === job.id && (
                     <ReasonComposer
                       id={job.id}
@@ -464,23 +440,97 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       onCancel={closeDismiss}
                       onSubmit={() => void confirmDismiss(job.id)}
                       busy={!!busy[job.id]}
-                      submitLabel="Save note"
+                      submitLabel="Dismiss"
                     />
                   )}
-                </article>
-              ))}
-            </div>
-          )}
-        </>
-      )}
+                </CardContent>
+              </Card>
+            ))}
+          </Stack>
+        )}
 
-      <div className="foot">
-        Built from the <code>job_watch.py</code> run on <code>vez</code>. Matches are filtered to
-        population-health / care-coordination / community-health roles in the two corridors, and
-        screened for licensure requirements. Your Applied / Not-for-me marks persist in Postgres —
-        nothing is deleted, it just moves to the archive. Any note you add when dismissing a job is
-        kept with it, so the filters can be retuned against what you actually rejected.
-      </div>
-    </main>
+        {data.archive.length > 0 && (
+          <Box>
+            <Divider sx={{ mb: 2 }} />
+            <Stack direction="row" spacing={1} sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                <Typography variant="h6">Archive</Typography>
+                <Chip size="small" label={data.archive.length} />
+              </Stack>
+              <Button onClick={() => setShowArchive((v) => !v)}>{showArchive ? 'Hide' : 'Show'}</Button>
+            </Stack>
+            {showArchive && (
+              <Stack spacing={2} sx={{ mt: 2 }}>
+                {data.archive.map((job) => (
+                  <Card key={job.id} variant="outlined">
+                    <CardContent>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ justifyContent: 'space-between' }}>
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 500 }}>
+                            {job.url ? (
+                              <Link href={job.url} target="_blank" rel="noopener noreferrer" underline="hover" color="inherit">
+                                {job.title}
+                              </Link>
+                            ) : (
+                              job.title
+                            )}
+                          </Typography>
+                          <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <Chip size="small" label={job.employer} variant="outlined" />
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              color={job.status === 'applied' ? 'success' : 'default'}
+                              label={job.status === 'applied' ? 'Applied' : 'Not applicable'}
+                            />
+                            <Typography variant="body2" color="text.secondary">
+                              {metaLine(job, rel, true)}
+                            </Typography>
+                          </Stack>
+                          {job.statusReason && (
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                              “{job.statusReason}”
+                            </Typography>
+                          )}
+                        </Box>
+                        <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
+                          <Button size="small" disabled={!!busy[job.id]} onClick={() => void setStatus(job.id, 'new')}>
+                            Restore
+                          </Button>
+                          {job.status === 'ignored' && (
+                            <Button size="small" onClick={() => openDismiss(job.id, job.statusReason ?? '')}>
+                              {job.statusReason ? 'Edit note' : 'Add note'}
+                            </Button>
+                          )}
+                        </Stack>
+                      </Stack>
+                      {dismissing === job.id && (
+                        <ReasonComposer
+                          id={job.id}
+                          value={reasonDraft}
+                          onChange={setReasonDraft}
+                          onCancel={closeDismiss}
+                          onSubmit={() => void confirmDismiss(job.id)}
+                          busy={!!busy[job.id]}
+                          submitLabel="Save note"
+                        />
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </Stack>
+            )}
+          </Box>
+        )}
+
+        <Typography variant="caption" component="p" color="text.secondary">
+          Built from the job_watch.py scan. Matches are filtered to population-health,
+          care-coordination, and community-health roles in the three areas, and screened for
+          licensure requirements. Your Applied / Not-for-me marks persist in Postgres — nothing is
+          deleted, it just moves to the archive. Any note you add when dismissing a job is kept with
+          it, so the filters can be retuned against what you actually rejected.
+        </Typography>
+      </Stack>
+    </Container>
   );
 }
