@@ -40,6 +40,7 @@ NEW_MD5=$(md5sum "$SRC" | cut -d' ' -f1)
 CUR_MD5=$([ -f "$DEST" ] && md5sum "$DEST" | cut -d' ' -f1 || echo none)
 
 if [ "$NEW_MD5" = "$CUR_MD5" ] && [ "$FORCE" != "--force" ]; then
+  # Silent: this runs from cron, and empty stdout means "nothing to report".
   exit 0
 fi
 
