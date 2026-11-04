@@ -19,17 +19,48 @@ Two parts that work together:
 ```
 vez (Pi)                              Vercel                       Postgres (Neon)
 ────────                              ──────                       ───────────────
-watcher/job_watch.py
+07:45  deploy-job-watch.sh ── git pull ──▶ install + selftest
+08:00  watcher/job_watch.py
   ├─ Camofox browser ──▶ 11 job boards
-  ├─ relevance filter
+  ├─ relevance filter (regex, deterministic)
   ├─ Telegram alert ──────────────▶ phone
   └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs
-                                              ▲                 (status: new/
-    8:00 daily                                │                  applied/ignored)
-       │                           /api/jobs  │
+       (incl. scanner hash)                   ▲               (status: new/
+                                              │                applied/ignored)
+                                  /api/jobs   │
        └── GET /api/suppressed ───────────────┘
            (skips jobs already applied to)
 ```
+
+**No LLM runs in the pipeline.** Hermes cron is only a scheduler: both jobs use `--no-agent`,
+so the script's stdout *is* the Telegram message and empty stdout sends nothing. Relevance is a
+fixed set of regexes in `job_watch.py` (`POSITIVE` / `NEGATIVE` / `URL_REJECT` / `DETAIL_REJECT`
+plus the location rules), covered by `--selftest`. AI is used when *authoring* those rules — e.g.
+reading the "not applicable" reasons off the dashboard and tightening a filter — never at runtime.
+That is what keeps a run free, reproducible and immune to invented postings.
+
+---
+
+## Keeping the Pi in sync
+
+The repo is the source of truth; the Pi holds a checkout and a deployed copy.
+
+| Piece | Path |
+|---|---|
+| Git checkout on the Pi | `~/.hermes/pop-health-jobs` |
+| Deployed script (what cron runs) | `~/.hermes/scripts/job_watch.py` |
+| Cron shim (stable, never edited) | `~/.hermes/scripts/deploy-job-watch.sh` |
+| Deploy logic (lives in the repo) | [`deploy/deploy-job-watch.sh`](deploy/deploy-job-watch.sh) |
+
+A second Hermes cron job (`dee89f6f4230`, 07:45) runs the shim, which pulls `main`, self-tests
+the candidate, and installs it atomically — keeping five rollbacks and hashing the installed file
+to prove it matches what was tested. It is silent when there is nothing to do and only speaks on
+an install or a failure. So `git push` is the whole deploy.
+
+Drift is visible two ways: the dashboard header shows `scanner <hash>` (the hash of the file that
+last fed it, sent in the ingest payload), and [`deploy/status-job-watch.sh`](deploy/status-job-watch.sh)
+prints a PASS/FAIL table for installed-vs-`origin/main`, selftest, cron presence, state freshness,
+board reachability and the scanner hash the board reports.
 
 ---
 
@@ -39,6 +70,11 @@ watcher/job_watch.py
 watcher/
   job_watch.py          the whole scraper/filter notifier — single file, stdlib only
   README.md             how to install it and the filter rules
+
+deploy/
+  deploy-job-watch.sh   pull → selftest → install atomically → verify hash
+  cron-shim.sh          installed as ~/.hermes/scripts/deploy-job-watch.sh
+  status-job-watch.sh   PASS/FAIL health check for the whole Pi side
 
 web/
   app/                  Next.js app router

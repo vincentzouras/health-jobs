@@ -17,25 +17,38 @@ Four of the boards can't be scraped with plain HTTP:
 Camofox (`127.0.0.1:9377`) handles all of them. It's already running as `camofox.service` for
 other Hermes work.
 
-## Install on the Pi
+## Deploy on the Pi
+
+Never `scp` by hand — that is how the Pi and the repo drift. The Pi keeps a checkout of this
+repo and installs from it:
 
 ```bash
-scp job_watch.py vincent@vez:~/.hermes/scripts/job_watch.py
-ssh vincent@vez '~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3 \
-  ~/.hermes/scripts/job_watch.py --selftest'
+ssh vincent@vez '~/.hermes/scripts/deploy-job-watch.sh'   # pull → selftest → install
 ```
 
-Register the daily run (already done, job id `8e7a83cfdc37`):
+The 07:45 cron (`dee89f6f4230`) runs that for you before the 08:00 scan. It is silent when there
+is nothing to do, installs atomically only if `--selftest` passes, keeps five rollback copies, and
+re-hashes the installed file against what it tested. Check everything with:
+
+```bash
+ssh vincent@vez '~/.hermes/bin/status-job-watch.sh'
+```
+
+Register the two jobs (already done):
 
 ```bash
 cd ~/.hermes/hermes-agent
+./hermes cron create "45 7 * * *" \
+  --name "Job board: deploy watcher from git" \
+  --script deploy-job-watch.sh --no-agent --deliver telegram
 ./hermes cron create "0 8 * * *" \
   --name "Job alerts: population health (PA/DE)" \
   --script job_watch.py --no-agent --deliver telegram
 ```
 
 `--no-agent` means the script's stdout *is* the message and empty stdout sends nothing. No LLM in
-the alert path: no per-run cost, no chance of an invented posting.
+the alert path: no per-run cost, no chance of an invented posting. Filtering is a fixed set of
+regexes, and `--selftest` is what protects them.
 
 ## Commands
 

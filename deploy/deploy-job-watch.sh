@@ -36,6 +36,13 @@ git -C "$REPO" merge --ff-only --quiet origin/main || {
 }
 NEW_HEAD=$(git -C "$REPO" rev-parse --short HEAD)
 
+# Keep the status helper in step with the repo too (it is small and has no state).
+if [ -f "$REPO/deploy/status-job-watch.sh" ]; then
+  mkdir -p "$HOME/.hermes/bin"
+  cp "$REPO/deploy/status-job-watch.sh" "$HOME/.hermes/bin/status-job-watch.sh"
+  chmod 775 "$HOME/.hermes/bin/status-job-watch.sh"
+fi
+
 NEW_MD5=$(md5sum "$SRC" | cut -d' ' -f1)
 CUR_MD5=$([ -f "$DEST" ] && md5sum "$DEST" | cut -d' ' -f1 || echo none)
 

@@ -957,6 +957,22 @@ def save_state(st):
     tmp.replace(STATE_FILE)
 
 
+def _write_run_log(now, new_keys, errors, health_warnings, found=0, relevant=0) -> None:
+    """Record every run, including silent ones.
+
+    A log that only updates when something alerts cannot distinguish "nothing new today"
+    from "the scheduled run never happened".
+    """
+    try:
+        LOG_FILE.write_text(json.dumps({
+            "at": now, "new": list(new_keys), "errors": errors,
+            "health_warnings": health_warnings,
+            "found": found, "relevant": relevant, "scanner": scanner_version(),
+        }, indent=1))
+    except Exception:
+        pass
+
+
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
@@ -1699,6 +1715,7 @@ def main() -> int:
                 print("• %s" % w)
         if str(st.get("web_sync", "")).startswith("FAILED"):
             print("⚠️ Dashboard sync %s" % st["web_sync"])
+        _write_run_log(now, [], errors, health_warnings, len(found), len(relevant))
         return 0
 
     lines = ["🔔 %d new job match%s\n" % (len(new_keys), "" if len(new_keys) == 1 else "es")]
@@ -1716,8 +1733,7 @@ def main() -> int:
             lines.append("• %s" % w)
     print("\n".join(lines))
 
-    LOG_FILE.write_text(json.dumps({"at": now, "new": new_keys, "errors": errors,
-                                    "health_warnings": health_warnings}, indent=1))
+    _write_run_log(now, new_keys, errors, health_warnings, len(found), len(relevant))
     for k in new_keys:
         st["seen"][k]["alerted"] = True
         st["seen"][k]["alerted_at"] = now

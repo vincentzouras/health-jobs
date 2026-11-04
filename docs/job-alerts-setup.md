@@ -6,20 +6,46 @@ _Deployed 2026-11-03, expanded 2026-11-04 · profile: default · owner: vincent@
 | Piece | Location |
 |---|---|
 | **Source (this repo)** | [`watcher/job_watch.py`](../watcher/job_watch.py) |
-| Script on the Pi | `~/.hermes/scripts/job_watch.py` — copy of the above |
+| Git checkout on the Pi | `~/.hermes/pop-health-jobs` — tracks `main` |
+| Deployed script | `~/.hermes/scripts/job_watch.py` — what cron actually runs |
+| Cron shim | `~/.hermes/scripts/deploy-job-watch.sh` — pulls, then execs the repo's deploy script |
 | State | `~/.hermes/job-watches/job-alerts-state.json` |
 | Last-run log | `~/.hermes/job-watches/job-alerts-last-run.json` |
-| Cron job | `8e7a83cfdc37` — daily 08:00, `--no-agent`, delivers to Telegram |
-| Browser | Camofox, `127.0.0.1:9377` (`camofox.service`) |
+| Deploy cron | `dee89f6f4230` — daily 07:45, `--no-agent`, Telegram only on install/failure |
+| Scan cron | `8e7a83cfdc37` — daily 08:00, `--no-agent`, delivers to Telegram |
+| Browser | Camofox, `127.0.0.1:9377` (`camofox.service`, user unit) |
 
-To update the Pi after editing the repo:
+### Deploying is `git push`
+
+The Pi pulls and installs by itself at 07:45, an hour before the scan:
 
 ```bash
-scp watcher/job_watch.py vincent@vez:~/.hermes/scripts/job_watch.py
+# nothing to do; the 07:45 job handles it. To do it now:
+ssh vincent@vez '~/.hermes/scripts/deploy-job-watch.sh'
 ```
 
+That pulls `main` (`--ff-only`), runs `--selftest` on the candidate, installs it atomically only
+if it passes, keeps five rollback copies, and re-hashes the installed file against what it tested.
+It prints nothing when already up to date, so the 07:45 cron stays silent unless it installed
+something or failed.
+
+`scp` is no longer part of the workflow — copying by hand is exactly how the Pi and the repo
+drifted apart.
+
+### Checking it
+
+```bash
+ssh vincent@vez '~/.hermes/bin/status-job-watch.sh'
+```
+
+Prints PASS/FAIL for: installed vs `origin/main`, selftest, both cron jobs, state freshness,
+board reachability, whether the board's reported `scanner` hash matches this Pi, the suppressed
+feed, and Camofox. The dashboard header also shows `scanner <hash>`, so the board itself proves
+which build fed it.
+
 Mode is **`--no-agent`**: the script's stdout *is* the message, and empty stdout sends
-nothing. No LLM in the alert path, so no token cost per run and no invented postings.
+nothing. No LLM in the alert path, so no token cost per run and no invented postings — relevance
+is fixed regex, exercised by `--selftest`.
 
 ## Sources — 11 employers, ~62 page loads, ~13 min per run
 

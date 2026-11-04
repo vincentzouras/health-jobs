@@ -47,7 +47,7 @@ fi
 # 2. the installed copy passes its own tests
 if out=$("$PY" "$DEST" --selftest 2>&1 | tail -1); then
   case "$out" in
-    *" 0 title failures"*" 0 location failures"*) ok "selftest" "$out" ;;
+    *"0 title failures"*"0 location failures"*) ok "selftest" "$out" ;;
     *) bad "selftest" "$out" ;;
   esac
 else
@@ -61,8 +61,8 @@ if [ -x "$HERMES/hermes" ]; then
     *active*) ok "cron $CRON_ID" "active, 0 8 * * *" ;;
     *) bad "cron $CRON_ID" "not active" ;;
   esac
-  AUTODEPLOY=$(("$HERMES/hermes" cron list 2>/dev/null || true) | grep -c "deploy-job-watch" || true)
-  [ "$AUTODEPLOY" -ge 1 ] && ok "cron auto-deploy" "scheduled" || bad "cron auto-deploy" "not scheduled (drift possible)"
+  AUTODEPLOY=$( ( "$HERMES/hermes" cron list 2>/dev/null || true ) | grep -c "deploy-job-watch" || true )
+  [ "${AUTODEPLOY:-0}" -ge 1 ] && ok "cron auto-deploy" "scheduled" || bad "cron auto-deploy" "not scheduled (drift possible)"
 else
   bad "cron" "hermes not found at $HERMES"
 fi
