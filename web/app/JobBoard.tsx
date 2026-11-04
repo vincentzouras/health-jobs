@@ -339,13 +339,8 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                 <div className="meta">
                   <span className="pill employer">{job.employer}</span>
                   {job.location && <span>{job.location}</span>}
-                  {job.posted ? (
-                    <span>· posted {fmtPosted(job.posted)}</span>
-                  ) : (
-                    <span title="The source does not publish a posting date; this is when the scan first saw it.">
-                      · found {rel(job.firstSeen)}
-                    </span>
-                  )}
+                  {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
+                  <span title="When the scan first saw this posting.">· found {rel(job.firstSeen)}</span>
                   {mounted && isStale(job) && (
                     <span className="pill stale" title="Not returned by the last few scans">
                       may be closed
@@ -431,7 +426,8 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       </span>
                       {job.location && <span>{job.location}</span>}
                       {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
-                      {job.statusChangedAt && <span>· {rel(job.statusChangedAt)}</span>}
+                      <span title="When the scan first saw this posting.">· found {rel(job.firstSeen)}</span>
+                      {job.statusChangedAt && <span>· marked {rel(job.statusChangedAt)}</span>}
                     </div>
                     {job.statusReason && (
                       <div className="reason-note">

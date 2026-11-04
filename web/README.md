@@ -50,6 +50,9 @@ npm run dev
 - The UI polls `/api/jobs` every 5 minutes and has a manual Refresh button.
 - A job whose `last_seen` is older than 7 days gets a **may be closed** badge rather than
   being removed — the posting may still be live even if it scrolled off the board.
+- Every card shows **found** (when the scan first saw the posting); when the source also
+  publishes a date it leads with **posted**. Archived cards add **marked** (when you set the
+  status), so the three times stay distinguishable.
 - Nothing is ever deleted. `Applied` / `Not for me` just set `status`, which moves the row
   to the archive; **Restore** puts it back in the main list.
 
