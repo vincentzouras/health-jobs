@@ -322,7 +322,10 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             Population Health Jobs
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Downingtown / Wilmington / York areas
+            Downingtown / Wilmington / York
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Scans for new jobs every morning
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Last checked {rel(data.meta.lastIngest)}
