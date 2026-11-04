@@ -943,17 +943,25 @@ def check_source_health(found, errors, prev_health) -> tuple[list, dict]:
                             % (name, n, peak))
     return warnings, health
 def load_state():
-    if STATE_FILE.exists():
-        try:
-            return json.loads(STATE_FILE.read_text())
-        except Exception:
-            pass
+    # A corrupt state file would look like a first run and re-alert everything, so fall back
+    # to the copy save_state keeps.
+    for path in (STATE_FILE, STATE_FILE.with_suffix(".bak")):
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                continue
     return {"seen": {}, "baseline_done": False, "runs": 0, "source_fail_streak": {}}
 
 
 def save_state(st):
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, indent=1, sort_keys=True))
+    if STATE_FILE.exists():
+        try:
+            STATE_FILE.with_suffix(".bak").write_bytes(STATE_FILE.read_bytes())
+        except Exception:
+            pass
     tmp.replace(STATE_FILE)
 
 
