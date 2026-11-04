@@ -1,0 +1,6 @@
+# The Pi runs job_watch.py straight from a Linux checkout, and its scanner hash (the md5 the
+# dashboard displays) is computed from those exact bytes. Forcing LF for code and scripts keeps
+# that hash identical on a Windows checkout, so "is the Pi running what is in the repo?" can be
+# answered by comparing hashes.
+*.py text eol=lf
+*.sh text eol=lf
