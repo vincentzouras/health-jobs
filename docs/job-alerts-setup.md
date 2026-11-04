@@ -95,10 +95,14 @@ than guessing at what to filter next.
 **https://pop-health-jobs.vercel.app** — public, no login.
 
 Every run pushes its relevant matches to Postgres on Vercel. On the page she can hit
-**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me** — which opens a
-one-line note box ("RN license required", "not population health", …) before it commits.
-Marked jobs leave the main list but stay in the **Archive** section with a **Restore** button —
-nothing is ever deleted, and a dismissal note is shown back on the archived card.
+**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me** — which requires a
+one-line reason ("RN license required", "not population health", …) before it commits.
+
+Applied jobs stay in the **Archive** with a **Restore** button. A **Not for me** row is a
+*filter-fix request*, not history: the reason is what the scanner gets corrected for, and once
+that is done the row is deleted from Postgres (`DELETE /api/jobs/:id`, `applied` rows are never
+deletable). So the archive doubles as the queue of everything that slipped through and still
+needs a filter change.
 
 ```
 vez (Pi)                            Vercel                         Postgres (Neon)

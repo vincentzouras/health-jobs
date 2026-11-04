@@ -112,6 +112,7 @@ function ReasonComposer({
   onSubmit,
   busy,
   submitLabel,
+  required = false,
 }: {
   id: string;
   value: string;
@@ -120,14 +121,18 @@ function ReasonComposer({
   onSubmit: () => void;
   busy: boolean;
   submitLabel: string;
+  /** Dismissals need a reason: it is the only way the filter gets corrected. */
+  required?: boolean;
 }) {
+  const empty = !value.trim();
   return (
     <Stack spacing={1} sx={{ mt: 2 }}>
       <TextField
         id={`reason-${id}`}
         label="Why not?"
-        placeholder="Optional — e.g. RN license required, not population health, commute too far"
+        placeholder="e.g. RN license required, not population health, commute too far"
         autoFocus
+        required={required}
         fullWidth
         multiline
         minRows={2}
@@ -141,17 +146,17 @@ function ReasonComposer({
             onCancel();
           } else if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            onSubmit();
+            if (!(required && empty)) onSubmit();
           }
         }}
       />
       <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-        <Typography variant="caption" color="text.secondary">
-          {value.trim().length}/{REASON_MAX}
+        <Typography variant="caption" color={required && empty ? 'warning.main' : 'text.secondary'}>
+          {required && empty ? 'A reason is required' : `${value.trim().length}/${REASON_MAX}`}
         </Typography>
         <Box sx={{ flex: 1 }} />
         <Button onClick={onCancel}>Cancel</Button>
-        <Button variant="contained" disabled={busy} onClick={onSubmit}>
+        <Button variant="contained" disabled={busy || (required && empty)} onClick={onSubmit}>
           {submitLabel}
         </Button>
       </Stack>
@@ -484,6 +489,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       onSubmit={() => void confirmDismiss(job.id)}
                       busy={!!busy[job.id]}
                       submitLabel="Dismiss"
+                      required
                     />
                   )}
                 </CardContent>
@@ -502,6 +508,10 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
               </Stack>
               <Button onClick={() => setShowArchive((v) => !v)}>{showArchive ? 'Hide' : 'Show'}</Button>
             </Stack>
+            <Typography variant="caption" color="text.secondary">
+              Not-applicable rows are a queue, not history: once the scanner is fixed for their
+              reason they get deleted from the database.
+            </Typography>
             {showArchive && (
               <Stack spacing={2} sx={{ mt: 2 }}>
                 {data.archive.map((job) => (
@@ -569,9 +579,9 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         <Typography variant="caption" component="p" color="text.secondary">
           Built from the job_watch.py scan. Matches are filtered to population-health,
           care-coordination, and community-health roles in the three areas, and screened for
-          licensure requirements. Your Applied / Not-for-me marks persist in Postgres — nothing is
-          deleted, it just moves to the archive. Any note you add when dismissing a job is kept with
-          it, so the filters can be retuned against what you actually rejected.
+          licensure requirements. Applied jobs stay in the archive. A Not-for-me row is a fix
+          request: the reason is what the scanner gets corrected for, and once it is, that row is
+          deleted from the database rather than kept.
         </Typography>
       </Stack>
     </Container>

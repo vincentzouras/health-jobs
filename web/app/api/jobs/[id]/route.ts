@@ -35,3 +35,26 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   if (rowCount === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
   return NextResponse.json({ ok: true, id, status, reason: reason || null });
 }
+
+/**
+ * Purge a "not applicable" row outright.
+ *
+ * An ignored row is a filter-fix request, not history: once the scanner has been corrected
+ * for its reason there is nothing left to keep. Applied rows are deliberately not deletable.
+ */
+export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  await ensureSchema();
+  const { rows } = await pool().query(
+    `DELETE FROM jobs WHERE id = $1 AND status = 'ignored' RETURNING id`,
+    [id],
+  );
+  if (rows.length > 0) return NextResponse.json({ ok: true, id, purged: true });
+
+  const existing = await pool().query(`SELECT status FROM jobs WHERE id = $1`, [id]);
+  if (existing.rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  return NextResponse.json(
+    { error: `only 'ignored' rows can be purged (this one is '${existing.rows[0].status}')` },
+    { status: 409 },
+  );
+}
