@@ -2,7 +2,7 @@
 
 `job_watch.py` — one file, Python standard library only. Scrapes 11 employer job boards through
 a local [Camofox](https://github.com/jo-inc/camofox-browser) browser, filters results down to roles
-the candidate can actually apply for, pushes them to the dashboard, and sends a Telegram alert for
+the graduate can actually apply for, pushes them to the dashboard, and sends a Telegram alert for
 anything new.
 
 ## Why a browser
@@ -30,7 +30,7 @@ Register the daily run (already done, job id `8e7a83cfdc37`):
 ```bash
 cd ~/.hermes/hermes-agent
 ./hermes cron create "0 8 * * *" \
-  --name "Job alerts: population health, PA/DE)" \
+  --name "Job alerts: population health (PA/DE)" \
   --script job_watch.py --no-agent --deliver telegram
 ```
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes job watch for the candidate (BS Population Health, CNA + scribe).
+Hermes job watch for population-health roles (BS Population Health, CNA + scribe).
 Corridors: (A) Downingtown / West Chester / Wilmington, (B) York / Lancaster / Harrisburg.
 
 Runs via Camofox (local anti-detect browser on :9377) because Penn Medicine and
@@ -807,7 +807,7 @@ SOURCES = [
     # for 10s, and when the results do render they span PA/NY/MD with the city buried
     # in the URL slug (and often only a county name, e.g. "-berks-county"). Keeping it
     # either injected out-of-region false positives or required opening every posting.
-    # the candidate can use the saved Indeed search for UPMC instead.
+    # Use the saved Indeed search for UPMC instead.
 ]
 
 
@@ -1235,7 +1235,7 @@ def main() -> int:
                 print("• %s" % w)
         return 0
 
-    lines = ["🔔 %d new job match%s \n" % (len(new_keys), "" if len(new_keys) == 1 else "es")]
+    lines = ["🔔 %d new job match%s\n" % (len(new_keys), "" if len(new_keys) == 1 else "es")]
     for i, k in enumerate(sorted(new_keys, key=lambda x: relevant[x]["employer"])[:10], 1):
         j = relevant[k]
         lines.append("%d. %s\n   🏥 %s" % (i, j["title"], j["employer"]))

@@ -1,6 +1,6 @@
 # pop-health-jobs
 
-A job-hunting system BS Population Health, Lehigh) covering two corridors —
+A job-hunting system for a population-health graduate (BS, Lehigh) covering two corridors —
 **Downingtown / Wilmington** and **York / Lancaster / Harrisburg**.
 
 Two parts that work together:

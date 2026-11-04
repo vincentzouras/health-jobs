@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Job Board',
+  title: 'Job Board · Population Health',
   description: 'Population health roles in the Downingtown/Wilmington and York corridors.',
 };
 
