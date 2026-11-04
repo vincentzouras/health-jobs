@@ -10,6 +10,7 @@ export interface Job {
   location: string | null;
   url: string;
   status: Status;
+  posted: string | null;
   firstSeen: string;
   lastSeen: string;
   statusChangedAt: string | null;
@@ -48,12 +49,14 @@ export async function ensureSchema(): Promise<void> {
           location          TEXT,
           url               TEXT,
           status            TEXT NOT NULL DEFAULT 'new',
+          posted            DATE,
           first_seen        TIMESTAMPTZ NOT NULL DEFAULT now(),
           last_seen         TIMESTAMPTZ NOT NULL DEFAULT now(),
           status_changed_at TIMESTAMPTZ
         );
       `);
       await pool().query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS job_key TEXT;`);
+      await pool().query(`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted DATE;`);
       await pool().query(`CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs (status);`);
       await pool().query(`CREATE INDEX IF NOT EXISTS jobs_last_seen_idx ON jobs (last_seen DESC);`);
       await pool().query(`

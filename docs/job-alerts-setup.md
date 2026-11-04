@@ -144,7 +144,7 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **58/58 pass** (42 title/location, 11 description, 3 Jefferson URL, 2 Penn table-layout) |
+| `--selftest` | **89/89 pass** (60 title/location, 11 description, 3 Jefferson URL, 2 Penn table-layout, 13 posted-date) |
 | Baseline | **561 postings -> 27 relevant, 0 errors** |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |
 | Silence when nothing new | `bytes=0` |

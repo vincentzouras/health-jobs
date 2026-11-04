@@ -45,7 +45,7 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 58 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 89 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 ```
 
@@ -53,12 +53,15 @@ $PY job_watch.py --baseline  # mark everything currently live as already-known
 
 Four gates, in order:
 
-1. **Title matches one of ~35 target roles** — care coordinator, patient navigator, community
+1. **Title matches one of ~50 target role families** — care coordinator, patient navigator, community
    health worker, health educator, outreach coordinator, quality improvement, referral/intake
-   coordinator, practice manager, case manager…
-2. **Title isn't excluded** — ~90 clinical and administrative terms (RN, LPN, therapist, tech,
-   coder, director, intern) plus social-program terms (treatment court, life skills, re-entry,
-   housing, shelter, justice) that were flooding in from PHMC.
+   coordinator, practice manager, case manager, plus the adjacent doors into the same employers
+   (patient services rep, medical staff coordinator, unit coordinator/secretary, health information,
+   disease intervention, emergency preparedness, process improvement).
+2. **Title isn't excluded** — ~95 clinical and administrative terms (RN, LPN, therapist, tech,
+   coder, director, intern, and the CNA-equivalent titles: nursing assistant, patient care
+   assistant) plus social-program terms (treatment court, life skills, re-entry, housing, shelter,
+   justice) that were flooding in from PHMC.
 3. **URL doesn't encode a license the title hides** — `rn-care-coordinator-per-diem` was slipping
    through as "Care Coordinator, Per Diem".
 4. **Location is in one of the two corridors** — city allow-list with word-boundary matching (so
@@ -68,6 +71,15 @@ Four gates, in order:
 For *new* matches only, it then opens the posting and rejects on hard requirements: "must have RN
 license", "master's required", "LCSW", "position filled". This exists because Melmark's $89,440
 "Health Care Coordinator" looked perfect and required a PA RN.
+
+## Posted dates
+
+Each list page is scanned for the posting date (`Posted 3 days ago`, `11/02/2026`,
+`Nov 2, 2026`, `2026-11-02`, …) and normalised to `YYYY-MM-DD` in `parse_posted()`. Sources that
+don't publish a date on the results page send `null` — the board then falls back to "found
+<when the Pi first saw it>" rather than inventing a date. The dashboard stores it in
+`jobs.posted` and only overwrites a known date with a newer known date, so a partial page load
+can't erase it.
 
 ## Failure behaviour
 

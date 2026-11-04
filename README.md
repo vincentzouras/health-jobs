@@ -116,5 +116,5 @@ ssh vincent@vez '~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3 
   ~/.hermes/scripts/job_watch.py --selftest'
 ```
 
-Run `--selftest` after **any** change to the filter rules — it has 58 cases covering title
+Run `--selftest` after **any** change to the filter rules — it has 89 cases covering title
 matching, geography, licensure screens, and the parsers.

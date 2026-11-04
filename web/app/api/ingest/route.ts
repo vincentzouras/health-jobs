@@ -10,7 +10,10 @@ interface IncomingJob {
   title: string;
   location?: string | null;
   url?: string | null;
+  posted?: string | null;
 }
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function POST(req: Request) {
   const expected = process.env.INGEST_TOKEN;
@@ -44,17 +47,19 @@ export async function POST(req: Request) {
     for (const j of jobs) {
       if (!j || !j.employer || !j.job_id || !j.title) continue;
       const id = jobId(j.employer, String(j.job_id));
+      const posted = typeof j.posted === 'string' && DATE_ONLY.test(j.posted) ? j.posted : null;
       const res = await client.query(
-        `INSERT INTO jobs (id, job_key, employer, title, location, url, last_seen)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
+        `INSERT INTO jobs (id, job_key, employer, title, location, url, posted, last_seen)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
          ON CONFLICT (id) DO UPDATE
            SET title     = EXCLUDED.title,
                job_key   = EXCLUDED.job_key,
                location  = COALESCE(EXCLUDED.location, jobs.location),
                url       = COALESCE(EXCLUDED.url, jobs.url),
+               posted    = COALESCE(EXCLUDED.posted, jobs.posted),
                last_seen = now()
          RETURNING (xmax = 0) AS was_inserted`,
-        [id, String(j.job_id), j.employer, j.title, j.location ?? null, j.url ?? null],
+        [id, String(j.job_id), j.employer, j.title, j.location ?? null, j.url ?? null, posted],
       );
       if (res.rows[0]?.was_inserted) inserted += 1;
       else updated += 1;

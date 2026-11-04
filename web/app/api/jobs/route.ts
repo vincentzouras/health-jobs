@@ -11,6 +11,7 @@ const rowToJob = (r: Record<string, unknown>): Job => ({
   location: (r.location as string) ?? null,
   url: (r.url as string) ?? '',
   status: r.status as Job['status'],
+  posted: (r.posted as string) ?? null,
   firstSeen: new Date(r.first_seen as string).toISOString(),
   lastSeen: new Date(r.last_seen as string).toISOString(),
   statusChangedAt: r.status_changed_at ? new Date(r.status_changed_at as string).toISOString() : null,
@@ -26,10 +27,10 @@ export async function GET() {
   try {
     await ensureSchema();
     const { rows } = await pool().query(
-      `SELECT id, employer, title, location, url, status,
+      `SELECT id, employer, title, location, url, status, posted::text AS posted,
               first_seen, last_seen, status_changed_at
          FROM jobs
-        ORDER BY last_seen DESC, first_seen DESC`,
+        ORDER BY posted DESC NULLS LAST, first_seen DESC`,
     );
     const jobs = rows.map(rowToJob);
     const active = jobs.filter((j) => j.status === 'new');

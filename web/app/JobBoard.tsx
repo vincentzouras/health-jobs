@@ -40,11 +40,29 @@ function isStale(job: Job): boolean {
   return Date.now() - seen > 7 * 24 * 60 * 60 * 1000;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Posted dates are plain YYYY-MM-DD; format from UTC parts so SSR and client agree. */
+function fmtPosted(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  const label = `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  return d.getUTCFullYear() === new Date().getUTCFullYear() ? label : `${label}, ${d.getUTCFullYear()}`;
+}
+
+/** Known posting dates rank above unknown ones, which fall back to found-order. */
+function postedRank(job: Job): number {
+  if (!job.posted) return -Infinity;
+  const t = new Date(`${job.posted}T00:00:00Z`).getTime();
+  return Number.isNaN(t) ? -Infinity : t;
+}
+
 export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [data, setData] = useState<ApiPayload>(initial);
   const [query, setQuery] = useState('');
   const [employer, setEmployer] = useState('all');
-  const [sort, setSort] = useState<'newest' | 'employer' | 'title'>('newest');
+  const [sort, setSort] = useState<'posted' | 'found' | 'employer' | 'title'>('posted');
   const [showArchive, setShowArchive] = useState(false);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
@@ -135,6 +153,10 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     rows = [...rows].sort((a, b) => {
       if (sort === 'employer') return a.employer.localeCompare(b.employer) || a.title.localeCompare(b.title);
       if (sort === 'title') return a.title.localeCompare(b.title);
+      if (sort === 'found') return new Date(b.firstSeen).getTime() - new Date(a.firstSeen).getTime();
+      const pa = postedRank(a);
+      const pb = postedRank(b);
+      if (pa !== pb) return pb - pa;
       return new Date(b.firstSeen).getTime() - new Date(a.firstSeen).getTime();
     });
     return rows;
@@ -198,7 +220,8 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
           ))}
         </select>
         <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort by">
-          <option value="newest">Newest first</option>
+          <option value="posted">Newest posted</option>
+          <option value="found">Recently found</option>
           <option value="employer">By employer</option>
           <option value="title">By title</option>
         </select>
@@ -232,7 +255,13 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                 <div className="meta">
                   <span className="pill employer">{job.employer}</span>
                   {job.location && <span>{job.location}</span>}
-                  <span>· found {rel(job.firstSeen)}</span>
+                  {job.posted ? (
+                    <span>· posted {fmtPosted(job.posted)}</span>
+                  ) : (
+                    <span title="The source does not publish a posting date; this is when the scan first saw it.">
+                      · found {rel(job.firstSeen)}
+                    </span>
+                  )}
                   {mounted && isStale(job) && (
                     <span className="pill stale" title="Not returned by the last few scans">
                       may be closed
@@ -305,6 +334,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                         {job.status === 'applied' ? 'Applied' : 'Not applicable'}
                       </span>
                       {job.location && <span>{job.location}</span>}
+                      {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
                       {job.statusChangedAt && <span>· {rel(job.statusChangedAt)}</span>}
                     </div>
                   </div>

@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CAMO = "http://127.0.0.1:9377"
@@ -104,6 +104,7 @@ def push_snapshot(relevant_jobs: dict, run_at: str) -> str:
                 "title": j["title"],
                 "location": j.get("location") or None,
                 "url": j.get("url") or None,
+                "posted": j.get("posted") or None,
             }
             for j in relevant_jobs.values()
         ],
@@ -179,15 +180,22 @@ POSITIVE = re.compile(
     r"population health|care coordinat|care navigator|patient navigator|"
     r"community health|community educator|community outreach|community resource|"
     r"health educator|health coach|health promotion|health navigator|"
-    r"care management|patient coordinator|patient services coordinator|"
+    r"care management|care manager|patient coordinator|patient services|"
     r"patient access|patient liaison|patient experience|patient advocate|"
     r"program coordinator|program liaison|program specialist|"
     r"quality coordinator|quality improvement|quality specialist|"
     r"compliance coordinator|compliance specialist|"
-    r"credentialing|payer enrollment|referral coordinator|intake coordinator|"
+    r"credentialing|medical staff|payer enrollment|referral coordinator|intake coordinator|"
     r"practice manager|practice coordinator|practice supervisor|"
-    r"social services coordinator|case manager|outreach coordinator|"
-    r"wellness coordinator|benefits coordinator|eligibility specialist",
+    r"social services?|case manager|case management|outreach coordinator|"
+    r"wellness coordinator|benefits coordinator|eligibility specialist|"
+    # Adjacent doors into the same health systems: front-of-house patient access,
+    # hospital unit/clerical coordination, public-health program roles.
+    r"front desk|receptionist|unit coordinator|unit secretary|unit support coordinator|"
+    r"clinical support assistant|clinical services coordinator|"
+    r"health information|medical records|provider services|"
+    r"prevention coordinator|prevention specialist|disease intervention|"
+    r"emergency preparedness|process improvement|improvement advisor",
     re.I,
 )
 
@@ -200,6 +208,8 @@ NEGATIVE = re.compile(
     r"medical assistant|coder|\bcoding\b|\bcdi\b|dietitian|nutritionist|"
     r"social worker|lcsw|lmsw|psycholog|counselor|clinician|behavior analyst|"
     r"bcba|direct support|caregiver|home health aide|\bcna\b|resident assistant|"
+    r"nursing assistant|nurse assistant|patient care assistant|patient care asst|"
+    r"patient care tech|patient sitter|patient observer|"
     r"paramedic|\bemt\b|phlebotom|sterile processing|dental|hygienist|"
     r"driver|\bcook\b|chef|housekeep|custodial|security officer|facilities|"
     r"engineer|electrician|plumber|hvac|accountant|attorney|paralegal|"
@@ -293,8 +303,19 @@ def revive_browser(tries: int = 2) -> bool:
     return camo_healthy()
 
 
+# ATS cards advertise the posting date in wildly different shapes. Grab the raw hint in
+# the page and normalise it in Python, which knows the run date.
+DATE_JS = r"""
+  const dateHint = (s) => {
+    const m = s.match(/(?:posted|posting date|date posted|open date|start date)\s*[:\-]?\s*(today|yesterday|\d+\+?\s*(?:hour|day|week|month)s?\s+ago|[A-Z][a-z]{2,8}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2})/i)
+      || s.match(/\b(\d{4}-\d{2}-\d{2})\b/)
+      || s.match(/\b(\d{1,2}\/\d{1,2}\/\d{4})\b/);
+    return m ? m[1] : '';
+  };
+"""
+
 EXTRACT_JS = r"""
-(() => {
+(() => {""" + DATE_JS + r"""
   const out = [], seen = new Set();
   for (const a of document.querySelectorAll('a[href]')) {
     const href = a.getAttribute('href') || '';
@@ -324,7 +345,7 @@ EXTRACT_JS = r"""
     const key = href + '|' + text.slice(0, 30);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ h: href, t: text.slice(0, 260) });
+    out.push({ h: href, t: text.slice(0, 260), d: dateHint(text) });
     if (out.length >= 60) break;
   }
   return out;
@@ -341,7 +362,7 @@ BODY_JS = r"""
 # AmeriHealth (Phenom) wraps each result in a container whose text holds the title,
 # the city and the requisition id; the anchor alone carries only the title.
 AH_EXTRACT_JS = r"""
-(() => {
+(() => {""" + DATE_JS + r"""
   const out = [], seen = new Set();
   for (const a of document.querySelectorAll('a[href*="/us/en/job/"]')) {
     const h = a.getAttribute('href') || '';
@@ -362,7 +383,7 @@ AH_EXTRACT_JS = r"""
     const k = h.slice(-24) + t.slice(0, 20);
     if (seen.has(k)) continue;
     seen.add(k);
-    out.push({ h: h, t: t.slice(0, 300) });
+    out.push({ h: h, t: t.slice(0, 300), d: dateHint(t) });
     if (out.length >= 40) break;
   }
   return out;
@@ -746,7 +767,7 @@ SOURCES = [
         # Workday encodes city+state in the URL path, so no default is needed.
         "wait": 14.0,
         "extract_js": r"""
-(() => {
+(() => {""" + DATE_JS + r"""
   const out = [], seen = new Set();
   for (const a of document.querySelectorAll('a[href*="/job/"]')) {
     const h = a.getAttribute('href') || '';
@@ -754,7 +775,9 @@ SOURCES = [
     const base = h.split('?')[0];
     if (seen.has(base)) continue;
     seen.add(base);
-    out.push({ h: base, t: (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 150) });
+    const row = a.closest('li,tr,[role="row"],[data-automation-id="jobItem"]');
+    const d = row ? dateHint((row.innerText || '').replace(/\s+/g, ' ')) : '';
+    out.push({ h: base, t: (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 150), d: d });
     if (out.length >= 40) break;
   }
   return out;
@@ -862,6 +885,50 @@ def save_state(st):
     tmp.replace(STATE_FILE)
 
 
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def parse_posted(hint, today=None):
+    """Normalise an ATS date hint ("Posted 3 days ago", "11/02/2026", ...) to YYYY-MM-DD.
+
+    Returns None when the card carried no usable date, which is the honest answer for
+    sources that simply do not publish one on the results page.
+    """
+    if not hint:
+        return None
+    today = today or datetime.now(timezone.utc).date()
+    h = re.sub(r"\s+", " ", str(hint)).strip().lower()
+    h = re.sub(r"^(?:posted|posting date|date posted|open date|start date)\s*[:\-]?\s*", "", h).strip()
+    if not h:
+        return None
+    try:
+        if h == "today":
+            return today.isoformat()
+        if h == "yesterday":
+            return (today - timedelta(days=1)).isoformat()
+        m = re.match(r"(\d+)\+?\s*(hour|day|week|month)s?\s+ago", h)
+        if m:
+            step = {"hour": 0, "day": 1, "week": 7, "month": 30}[m.group(2)]
+            return (today - timedelta(days=step * int(m.group(1)))).isoformat()
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})", h)
+        if m:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date().isoformat()
+        m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", h)
+        if m:
+            year = int(m.group(3))
+            year += 2000 if year < 100 else 0
+            return datetime(year, int(m.group(1)), int(m.group(2))).date().isoformat()
+        m = re.match(r"([a-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})", h)
+        if m:
+            month = _MONTHS.get(m.group(1)[:3])
+            if month:
+                return datetime(int(m.group(3)), month, int(m.group(2))).date().isoformat()
+    except Exception:
+        return None
+    return None
+
+
 def collect(prev_health=None):
     prev_health = prev_health or {}
     found, errors = {}, []
@@ -923,6 +990,7 @@ def collect(prev_health=None):
                     "title": title[:120],
                     "location": re.sub(r"\s+", " ", loc)[:80],
                     "url": link,
+                    "posted": parse_posted(item.get("d")),
                 }
                 new_here += 1
 
@@ -964,7 +1032,7 @@ def collect(prev_health=None):
                         found[key] = {
                             "employer": src["name"], "id": jid, "title": title[:120],
                             "location": re.sub(r"\s+", " ", loc or src.get("default_location", ""))[:80],
-                            "url": link,
+                            "url": link, "posted": parse_posted(item.get("d")),
                         }
     return found, errors
 
@@ -1017,6 +1085,25 @@ def selftest() -> int:
         ("Community Outreach Specialist (Full-Time)", "Philadelphia, PA", True),
         ("Referral Coordinator (Bilingual Spanish)", "Philadelphia, PA", True),
         ("Intake & Eligibility Specialist - ELRC 18", "Philadelphia, PA", True),
+        # Adjacent health-system doors that a BS + CNA/scribe background clears
+        ("Patient Services Representative - Cardiology", "Southeastern PA", True),
+        ("Medical Staff Coordinator", "Southeastern PA", True),
+        ("Health Information Management Services Coordinator", "Wilmington, Delaware", True),
+        ("Disease Intervention Specialist - HIV/STI", "Media, PA", True),
+        ("Unit Coordinator", "West Chester, PA", True),
+        ("Care Manager II", "Dover, Delaware", True),
+        ("Trauma Prevention Coordinator", "Northeast Philadelphia, PA", True),
+        ("Emergency Preparedness Specialist", "Southeastern PA", True),
+        ("Front Desk Coordinator - Primary Care", "West Chester, PA", True),
+        # ...but direct-care titles stay out, however they are worded
+        ("Nursing Assistant and Unit Secretary - Neuroscience", "York, PA", False),
+        ("Patient Care Assistant - Neuro/Trauma", "Southeastern PA", False),
+        ("Staffing Office Coordinator FT Night Nursing Admin", "Philadelphia, PA", False),
+        ("Radiographer - Urgent Care", "York, PA", False),
+        ("Value Analysis Coordinator", "York, PA", False),
+        ("911 Dispatcher", "West Chester, PA", False),
+        ("Deputy Sheriff III (Sergeant)", "West Chester, PA", False),
+        ("Grant Writer", "Southeastern PA", False),
     ]
     # Note: the RN-required "Health Care Coordinator" is expected to PASS the title
     # filter (title looks relevant); it is caught by the description screen below.
@@ -1101,9 +1188,41 @@ def selftest() -> int:
         print("%-6s %-50s -> %r | %r" % ("PASS" if ok else "FAIL", want_t[:50],
                                          got[1] if got else None, got[2] if got else None))
 
-    print("\n%d title failures, %d detail failures, %d jefferson failures, %d penn failures, %d cases total"
-          % (fails, dfails, jfails, pfails, len(corpus) + len(detail_corpus) + len(jcases) + len(pcases)))
-    return 0 if (fails == 0 and dfails == 0 and jfails == 0 and pfails == 0) else 1
+    # Posted-date normalisation: the date must be right, or the board silently lies.
+    from datetime import date as _date
+    today = _date(2026, 11, 4)
+    dcases = [
+        ("Today", "2026-11-04"),
+        ("Yesterday", "2026-11-03"),
+        ("3 days ago", "2026-11-01"),
+        ("30+ days ago", "2026-10-05"),
+        ("2 weeks ago", "2026-10-21"),
+        ("11/02/2026", "2026-11-02"),
+        ("11/2/26", "2026-11-02"),
+        ("2026-11-01", "2026-11-01"),
+        ("Nov 2, 2026", "2026-11-02"),
+        ("Posted Nov 2, 2026", "2026-11-02"),
+        ("Sept 30, 2026", "2026-09-30"),
+        ("", None),
+        (None, None),
+        ("whenever", None),
+    ]
+    printf = "\n%-6s %-28s -> %r"
+    print("\n--- posted date parsing ---")
+    postfails = 0
+    for hint, want in dcases:
+        got = parse_posted(hint, today)
+        ok = got == want
+        if not ok:
+            postfails += 1
+        print(printf % ("PASS" if ok else "FAIL", str(hint)[:28], got))
+
+    print("\n%d title failures, %d detail failures, %d jefferson failures, %d penn failures, "
+          "%d posted failures, %d cases total"
+          % (fails, dfails, jfails, pfails, postfails,
+             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases)))
+    return 0 if (fails == 0 and dfails == 0 and jfails == 0 and pfails == 0
+                 and postfails == 0) else 1
 
 
 def main() -> int:
@@ -1146,7 +1265,9 @@ def main() -> int:
     if "--dump" in args:
         print("=== RELEVANT (%d) ===" % len(relevant))
         for k, j in sorted(relevant.items(), key=lambda kv: kv[1]["title"]):
-            print("  [%s] %-55s | %s | %s" % (j["employer"][:14], j["title"][:55], j["location"][:24], j["url"][:70]))
+            print("  [%s] %-55s | %-24s | %-10s | %s" % (
+                j["employer"][:14], j["title"][:55], j["location"][:24],
+                j.get("posted") or "?", j["url"][:70]))
         print("\n=== NEW since last run (%d) ===" % len(new_keys))
         for k in new_keys:
             print("  NEW:", relevant[k]["title"], "|", relevant[k]["employer"])
