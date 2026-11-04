@@ -21,7 +21,7 @@ scp watcher/job_watch.py vincent@vez:~/.hermes/scripts/job_watch.py
 Mode is **`--no-agent`**: the script's stdout *is* the message, and empty stdout sends
 nothing. No LLM in the alert path, so no token cost per run and no invented postings.
 
-## Sources — 11 employers, ~45 page loads, ~12 min per run
+## Sources — 11 employers, ~62 page loads, ~13 min per run
 
 | Employer | Loads | Notes |
 |---|---|---|
@@ -33,9 +33,9 @@ nothing. No LLM in the alert path, so no token cost per run and no invented post
 | ChristianaCare | 4 | Publishes real pay bands |
 | Main Line Health | 3 | Paoli, Bryn Mawr, Media, Wynnewood |
 | AmeriHealth Caritas | 3 | National payer — most postings are out of region and get filtered |
-| Chester County | 1 | GovernmentJobs |
-| **Montgomery County** ⭐ | 2 | GovernmentJobs — Norristown |
-| **Delaware County** ⭐ | 2 | GovernmentJobs — Media |
+| Chester County | 8 | GovernmentJobs — West Chester. NEOGOV ignores `?keyword=`, so all ~78 postings are paged |
+| **Montgomery County** ⭐ | 5 | GovernmentJobs — Norristown; paged (~46 postings) |
+| **Delaware County** ⭐ | 2 | GovernmentJobs — Media; paged (~18 postings) |
 
 ⭐ = added this round.
 
@@ -54,20 +54,27 @@ nothing. No LLM in the alert path, so no token cost per run and no invented post
 
 `classify(title, location, url)` — deterministic, in order:
 
-1. **Title must match** one of ~35 target titles (care coordinator, patient navigator,
+1. **Title must match** one of 59 target-title patterns (care coordinator, patient navigator,
    community health, health educator, outreach, quality, credentialing, referral/intake
    coordinator, practice manager, case manager…).
-2. **Title must not match** ~90 clinical/administrative terms (RN, LPN, therapist, tech, coder,
-   director, intern, cook, **treatment court, life skills, re-entry, housing, shelter, justice,
-   residential**…). The social-program terms were added because PHMC's board is full of
-   justice/housing case-management roles that aren't health work.
+2. **Title must not match** 112 rejection patterns (RN, LPN, therapist, tech, coder,
+   director, intern, **lead / master / senior / sr. / principal**, cook, **treatment court,
+   life skills, re-entry, housing, shelter, justice, residential**…). The social-program terms
+   were added because PHMC's board is full of justice/housing case-management roles that aren't
+   health work; the seniority terms exist because "Lead Case Manager" and "Master Improvement
+   Advisor" were reaching a board meant for a first job out of a BS.
 3. **URL must not encode a license** the title hides — `rn-care-coordinator-per-diem` was
    slipping through as "Care Coordinator, Per Diem".
 4. **Location must be in one corridor.** City allow-list, word-boundary matched so
    "District Of **Columbia**" no longer matches "Columbia, PA" and "Dorchester" no longer
    matches "Chester, PA". A ~45-state blocklist rejects anything outside PA/DE.
-   **Unknown location = dropped**, never guessed — except for five sources that publish no city
-   at all, which carry an explicit `default_location`.
+   **Unknown location = dropped**, never guessed — except for seven sources that publish no
+   city at all (Main Line, WellSpan, Tower, PHMC, and the three county GovernmentJobs boards),
+   which carry an explicit `default_location`.
+   **Kent/Sussex County DE is out**: Dover, Smyrna and Milford are another 60–90 min past
+   Wilmington rather than on the commute to it. The check keys off the state, so "Dover, PA"
+   (York County) still passes. The reachable map is West Chester ⇄ Wilmington along US-202/I-95,
+   plus the York / Lancaster / Harrisburg corridor.
 5. **Description screen** (`detail_reject`) runs on *new* matches only: rejects
    "must have RN license", "master's required", "LCSW", "position filled", etc. This exists
    because Melmark's $89,440 "Health Care Coordinator" looked perfect and required a PA RN.
@@ -156,7 +163,7 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **95/95 pass** (68 title/location, 11 description, 3 Jefferson URL, 2 Penn table-layout, 11 posted-date) |
+| `--selftest` | **106/106 pass** (76 title/location, 11 description, 3 Jefferson URL, 4 Penn table-layout, 11 posted-date) |
 | Baseline | **561 postings -> 55 relevant, 0 errors** |
 | Board population | 55 active rows, **15 with a real posted date**, 40 on the "found" fallback |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |
@@ -211,4 +218,5 @@ flooding you on the next run.
   is small but real.
 - **AmeriHealth needs an 11 s render wait** (Phenom renders the list late); at 5 s the cards are
   still empty and everything drops as "unknown location".
-- **~12 minutes per run** — full-board pagination plus a description fetch per new match. Verified the scheduler tolerates it (real run: 711s, Ran now: succeeded).
+- **~13 minutes per run** — full-board pagination (including all ~78 Chester County rows) plus
+  a description fetch per new match. Verified the scheduler tolerates it (real run: 711s).

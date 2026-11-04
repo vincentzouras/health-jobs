@@ -132,9 +132,10 @@ ALLOWED_CITIES = [
     "norristown", "king of prussia", "newtown square", "plymouth meeting",
     "blue bell", "lansdale", "horsham", "willow grove", "abington", "jenkintown",
     "philadelphia", "collegeville", "west point",
-    # Delaware
+    # Delaware - New Castle County only. Kent/Sussex (Dover, Smyrna, Milford) sit another
+    # 60-90 min past Wilmington, so they are rejected by FAR_DE below.
     "wilmington", "newark", "new castle", "middletown", "bear", "glasgow",
-    "dover", "smyrna", "milford",
+    "dover",  # Dover, PA (York County, in corridor); Dover, DE is caught by FAR_DE
     # Corridor B - York / Lancaster / Harrisburg
     "york", "hanover", "spring grove", "gettysburg", "lancaster", "ephrata",
     "lititz", "mount joy", "elizabethtown", "new holland", "quarryville",
@@ -169,6 +170,10 @@ _CITY_RE = re.compile(
     r"(?<![a-z])(?:" + "|".join(re.escape(c) for c in sorted(ALLOWED_CITIES, key=len, reverse=True)) + r")(?![a-z])",
     re.I,
 )
+
+# Kent/Sussex County DE is past Wilmington, not on the way to it. Keyed off the state so
+# "Dover, PA" (York County) keeps working - the city name alone can't tell them apart.
+FAR_DE = re.compile(r"\b(?:dover|smyrna|milford)\b[^;|]*?(?:\bDE\b|\bdelaware\b)", re.I)
 
 
 def _city_in_corridor(loc: str) -> bool:
@@ -217,6 +222,8 @@ NEGATIVE = re.compile(
     r"marketing|fundrais|director|vice president|\bvp\b|\bchief\b|president|"
     r"intern\b|internship|student|fellowship|resident\b|volunteer|"
     r"transcription|scheduler\b|"
+    # Seniority verbs: these are the roles she is not hired into straight out of a BS.
+    r"\blead\b|\bmaster\b|\bsenior\b|\bsr\.?(?![a-z])|\bprincipal\b|"
     r"treatment court|drug court|life skills|benefits advocate|"
     r"re-?entry|shelter|housing|homeless|justice|probation|parole|"
     r"bips\b|safety & responsibility|residential|group home|"
@@ -252,6 +259,8 @@ def classify(title: str, location: str = "", url: str = "") -> tuple[bool, str]:
         return False, "unknown location"
     if BAD_LOCATION.search(loc):
         return False, "outside corridor"
+    if FAR_DE.search(loc):
+        return False, "beyond Wilmington (Kent/Sussex DE)"
     if not _city_in_corridor(loc):
         return False, "not an allowed city"
     return True, "ok"
@@ -519,11 +528,37 @@ def _clean_penn_loc(raw: str) -> str:
     """Strip category/label words that a greedy match pulls in front of the city."""
     head, _, tail = raw.partition(",")
     words = head.split()
+    # A card with no recognisable category glues the title onto the city
+    # ("Master Improvement Advisor Business Process Improvement Philadelphia"). Snap to the
+    # longest trailing run that is a real corridor city so "West Chester" survives intact.
+    for n in (3, 2, 1):
+        if len(words) >= n and _CITY_RE.fullmatch(" ".join(words[-n:])):
+            return (" ".join(words[-n:]) + "," + tail).strip()
     if len(words) > 3:
         words = words[-3:]
     while words and words[0].lower() in PENN_CATEGORY_WORDS:
         words.pop(0)
     return (" ".join(words) + "," + tail).strip() if words else ""
+
+
+_PENN_US_ANCHOR = re.compile(r",\s*(?:PA|NJ|DE|NY|MD),\s*United States", re.I)
+
+
+def _trim_penn_title(title: str) -> str:
+    """Drop a "<Category> <City, ST, United States> <shift> | ..." tail glued onto a title.
+
+    Anchored on the state suffix and walked back over a real corridor city, because a
+    left-to-right match happily starts the "city" at the last word of the title.
+    """
+    title = (title or "").strip(" |-—")
+    m = _PENN_US_ANCHOR.search(title)
+    if not m:
+        return title
+    words = title[: m.start()].split()
+    for n in (3, 2, 1):
+        if len(words) >= n and _CITY_RE.fullmatch(" ".join(words[-n:])):
+            return " ".join(words[:-n]).strip(" |-—")
+    return " ".join(words).strip(" |-—")
 
 
 def parse_penn(href, text, base):
@@ -554,7 +589,7 @@ def parse_penn(href, text, base):
 
     # Cards read: "<title> <Category> <City, ST, United States> <shift>"
     parts = re.split(r"\b(?:%s)\b" % PENN_CATEGORIES, body, maxsplit=1)
-    title = parts[0].strip(" |-—")
+    title = _trim_penn_title(parts[0].strip(" |-—"))
     rest = parts[1] if len(parts) > 1 else body
     loc = ""
     found = re.findall(r"([A-Z][A-Za-z.'-]*(?:[ -][A-Z][A-Za-z.'-]*)*,\s*(?:PA|NJ|DE|NY|MD),\s*United States)", rest)
@@ -563,7 +598,7 @@ def parse_penn(href, text, base):
     if not title:
         slug = href.rsplit("/", 1)[-1]
         title = re.sub(r"^\d+-", "", slug).replace("-", " ").replace("slash", "/").title()
-    return jid, title, loc, href
+    return jid, _trim_penn_title(title), loc, href
 
 
 def parse_mainline(href, text, base):
@@ -748,27 +783,30 @@ SOURCES = [
         "base": "https://www.governmentjobs.com/careers/chesco",
         "parse": parse_govjobs,
         "default_location": "West Chester, PA",
-        "urls": ["https://www.governmentjobs.com/careers/chesco"],
+        # NEOGOV ignores ?keyword= (it bounces straight back to the bare board), so the only
+        # way past the first 10 of ~78 postings is `?page=N`. Sorted by posting date desc.
+        # Recount with the board's "Showing 1-10 of N jobs" line if this starts truncating.
+        "paginate": {"pattern": "https://www.governmentjobs.com/careers/chesco?page={page}",
+                     "start": 1, "max": 8, "gap": 1.5, "retries": 1},
+        "urls": [],
     },
     {
         "name": "Montgomery County",
         "base": "https://www.governmentjobs.com/careers/montcopa",
         "parse": parse_govjobs,
         "default_location": "Norristown, PA",
-        "urls": [
-            "https://www.governmentjobs.com/careers/montcopa",
-            "https://www.governmentjobs.com/careers/montcopa?keyword=health",
-        ],
+        "paginate": {"pattern": "https://www.governmentjobs.com/careers/montcopa?page={page}",
+                     "start": 1, "max": 5, "gap": 1.5, "retries": 1},
+        "urls": [],
     },
     {
         "name": "Delaware County",
         "base": "https://www.governmentjobs.com/careers/delcopa",
         "parse": parse_govjobs,
         "default_location": "Media, PA",
-        "urls": [
-            "https://www.governmentjobs.com/careers/delcopa",
-            "https://www.governmentjobs.com/careers/delcopa?keyword=health",
-        ],
+        "paginate": {"pattern": "https://www.governmentjobs.com/careers/delcopa?page={page}",
+                     "start": 1, "max": 2, "gap": 1.5, "retries": 1},
+        "urls": [],
     },
     # PA Civil Service is NOT monitored: governmentjobs.com/careers/pabureau ignores
     # ?keyword= and returns the same alphabetical first page (liquor enforcement, state
@@ -1104,6 +1142,16 @@ def selftest() -> int:
         ("Care Coordinator", "Princeton, NJ", False),
         ("Care Coordinator", "Camden, NJ", False),
         ("Cook", "York, PA", False),
+        # Seniority: not hired into these straight out of a BS
+        ("Lead Case Manager", "Philadelphia, PA", False),
+        ("Master Improvement Advisor", "Philadelphia, PA", False),
+        ("Senior Care Coordinator", "West Chester, PA", False),
+        ("Sr. Care Coordinator", "Exton, PA", False),
+        ("Principal Program Coordinator", "Media, PA", False),
+        # Kent/Sussex DE is past Wilmington, not on the commute to it
+        ("Care Manager II", "Dover, Delaware", False),
+        ("Care Coordinator", "Smyrna, DE", False),
+        ("Community Health Worker", "Milford, Delaware", False),
         # Regression: substring matching used to let these through
         ("Community Health Navigator", "Washington, District Of Columbia", False),
         ("Community Health Worker", "Dorchester, Massachusetts", False),
@@ -1127,7 +1175,8 @@ def selftest() -> int:
         ("Health Information Management Services Coordinator", "Wilmington, Delaware", True),
         ("Disease Intervention Specialist - HIV/STI", "Media, PA", True),
         ("Unit Coordinator", "West Chester, PA", True),
-        ("Care Manager II", "Dover, Delaware", True),
+        ("Care Manager II", "Dover, PA", True),
+        ("Health Information Management Services Coordinator IV", "Wilmington, Delaware", True),
         ("Trauma Prevention Coordinator", "Northeast Philadelphia, PA", True),
         ("Emergency Preparedness Specialist", "Southeastern PA", True),
         ("Front Desk Coordinator - Primary Care", "West Chester, PA", True),
@@ -1214,6 +1263,15 @@ def selftest() -> int:
          "345417 Patient Navigator Cardiac Testing NEW Clerical/Administrative Doylestown, PA, United States FT "
          "347690 Patient Navigator Parkesburg Clinical Support Parkesburg, PA, United States FT",
          "Patient Navigator Cardiac Testing", "Doylestown, PA, United States"),
+        # A card with no recognised category used to keep the location and eat the title's
+        # last words into the location ("Process Improvement Philadelphia, PA, United States").
+        ("https://careers.pennmedicine.org/jobs/18196623-master-improvement-advisor",
+         "Master Improvement Advisor Business Process Improvement Philadelphia, PA, United States FT "
+         "| Process Improvement Philadelphia, PA, United States",
+         "Master Improvement Advisor Business Process Improvement", "Philadelphia, PA, United States"),
+        ("https://careers.pennmedicine.org/jobs/18000001-care-coordinator-west-chester",
+         "Care Coordinator West Chester, PA, United States FT",
+         "Care Coordinator", "West Chester, PA, United States"),
     ]
     pfails = 0
     for href, txt, want_t, want_l in pcases:

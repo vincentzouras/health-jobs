@@ -45,29 +45,41 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 95 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 106 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 ```
+
+## Geography
+
+Two live corridors, both active:
+
+- **West Chester ⇄ Wilmington** — the home/work commute along US-202 and I-95, plus the
+  Downingtown / Exton / Malvern / King of Prussia ring and the Philadelphia edge.
+- **York** — plus Hanover, Lancaster, Harrisburg, Hershey, Camp Hill and Carlisle.
+
+Kent/Sussex County DE (Dover, Smyrna, Milford) is rejected: it is another 60–90 min *past*
+Wilmington, not on the way to it. `FAR_DE` keys off the state suffix so Dover, PA stays in.
 
 ## What counts as a match
 
 Four gates, in order:
 
-1. **Title matches one of ~50 target role families** — care coordinator, patient navigator, community
+1. **Title matches one of 59 target-title patterns** — care coordinator, patient navigator, community
    health worker, health educator, outreach coordinator, quality improvement, referral/intake
    coordinator, practice manager, case manager, plus the adjacent doors into the same employers
    (patient services rep, medical staff coordinator, unit coordinator/secretary, health information,
    disease intervention, emergency preparedness, process improvement).
-2. **Title isn't excluded** — ~95 clinical and administrative terms (RN, LPN, therapist, tech,
-   coder, director, intern, and the CNA-equivalent titles: nursing assistant, patient care
-   assistant) plus social-program terms (treatment court, life skills, re-entry, housing, shelter,
-   justice) that were flooding in from PHMC.
+2. **Title isn't excluded** — 112 rejection patterns: clinical and administrative terms (RN, LPN,
+   therapist, tech, coder, director, intern, and the CNA-equivalent titles: nursing assistant,
+   patient care assistant), seniority words (lead, master, senior, sr., principal) that are not
+   first-job titles, plus social-program terms (treatment court, life skills, re-entry, housing,
+   shelter, justice) that were flooding in from PHMC.
 3. **URL doesn't encode a license the title hides** — `rn-care-coordinator-per-diem` was slipping
    through as "Care Coordinator, Per Diem".
 4. **Location is in one of the two corridors** — city allow-list with word-boundary matching (so
    "District Of **Columbia**" doesn't match "Columbia, PA"), plus a ~45-state blocklist. Unknown
-   location is dropped, never guessed.
+   location is dropped, never guessed. Kent/Sussex DE is rejected separately (see Geography).
 
 For *new* matches only, it then opens the posting and rejects on hard requirements: "must have RN
 license", "master's required", "LCSW", "position filled". This exists because Melmark's $89,440
