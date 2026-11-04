@@ -17,4 +17,4 @@ if [ -d "$REPO/.git" ]; then
   git -C "$REPO" merge --ff-only --quiet origin/main 2>/dev/null || true
 fi
 
-exec "$REPO/deploy/deploy-job-watch.sh" "$@"
+exec bash "$REPO/deploy/deploy-job-watch.sh" "$@"
