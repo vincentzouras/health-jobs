@@ -2,7 +2,8 @@
 
 Vercel app fed by the `job_watch.py` cron on `vez`. Shows population-health roles in the
 Downingtown/Wilmington and York corridors, lets you mark each one **Applied** or
-**Not for me**, and keeps everything in an archive instead of deleting it.
+**Not for me** (with an optional note on why), and keeps everything in an archive instead of
+deleting it.
 
 ## How it fits together
 
@@ -20,8 +21,8 @@ job_watch.py   ──POST /api/ingest──▶  API (token auth)  ──upsert�
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/api/jobs` | public | `{ active, archive, meta }` |
-| `PATCH` | `/api/jobs/:id` | public | body `{ "status": "new" \| "applied" \| "ignored" }` |
+| `GET` | `/api/jobs` | public | `{ active, archive, meta }` — each job carries `status` and `statusReason` |
+| `PATCH` | `/api/jobs/:id` | public | body `{ "status": "new" \| "applied" \| "ignored", "reason"?: string }` |
 | `POST` | `/api/ingest` | `x-ingest-token` header | body `{ "run_at": iso, "jobs": [{ employer, job_id, title, location, url }] }` |
 | `GET` | `/api/suppressed` | public | `{ suppressed: [{ employer, id }] }` for the Pi |
 
@@ -51,3 +52,19 @@ npm run dev
   being removed — the posting may still be live even if it scrolled off the board.
 - Nothing is ever deleted. `Applied` / `Not for me` just set `status`, which moves the row
   to the archive; **Restore** puts it back in the main list.
+
+## Dismissal notes
+
+`Not for me` opens a small note box before it commits. The text is optional, capped at 400
+characters, stored in `jobs.status_reason`, and shown on the archived card under **Why not**.
+Archived dismissals keep an **Add note** / **Edit note** button, so older rows can be filled in
+later. `Applied` and **Restore** clear it (the column is kept in step with `status = 'ignored'`).
+
+The notes exist to feed the scraper: `job_watch.py`'s title/location/description screens are
+tuned by hand, so reading back what was actually rejected is how the filter terms get a
+correction instead of a guess. `GET /api/jobs` returns them, e.g.
+
+```bash
+curl -s https://pop-health-jobs.vercel.app/api/jobs \
+  | jq -r '.archive[] | select(.statusReason) | "\(.employer) — \(.title) — \(.statusReason)"'
+```

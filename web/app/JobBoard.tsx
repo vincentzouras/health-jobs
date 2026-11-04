@@ -12,6 +12,9 @@ interface ApiPayload {
 
 const REFRESH_MS = 5 * 60 * 1000;
 
+/** Mirrors MAX_REASON in lib/db.ts — that module pulls in `pg`, so it can't be imported here. */
+const REASON_MAX = 400;
+
 /** Deterministic UTC formatting so SSR and client produce identical markup. */
 function fmtUTC(iso: string | null): string {
   if (!iso) return 'never';
@@ -58,6 +61,63 @@ function postedRank(job: Job): number {
   return Number.isNaN(t) ? -Infinity : t;
 }
 
+/** Shared note box: opened by "Not for me" on a live job and by "Add/Edit note" in the archive. */
+function ReasonComposer({
+  id,
+  value,
+  onChange,
+  onCancel,
+  onSubmit,
+  busy,
+  submitLabel,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+  busy: boolean;
+  submitLabel: string;
+}) {
+  return (
+    <div className="dismisser">
+      <label className="sr" htmlFor={`reason-${id}`}>
+        Why is this not a fit?
+      </label>
+      <textarea
+        id={`reason-${id}`}
+        className="reason"
+        rows={2}
+        autoFocus
+        maxLength={REASON_MAX}
+        placeholder="Optional note — e.g. “RN license required”, “not population health”, “commute too far”"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          } else if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+      <div className="dismisser-actions">
+        <span className="hint">
+          {value.trim().length}/{REASON_MAX} · saved with the archive so the filters can be retuned later
+        </span>
+        <button className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="btn" disabled={busy} onClick={onSubmit}>
+          {submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [data, setData] = useState<ApiPayload>(initial);
   const [query, setQuery] = useState('');
@@ -67,6 +127,9 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [mounted, setMounted] = useState(false);
+  /** Job whose "not for me" note box is open, plus its unsaved text. */
+  const [dismissing, setDismissing] = useState<string | null>(null);
+  const [reasonDraft, setReasonDraft] = useState('');
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Relative times and local-time strings must not be rendered during SSR, or the
@@ -95,7 +158,8 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   }, [refresh]);
 
   const setStatus = useCallback(
-    async (id: string, status: Status) => {
+    async (id: string, status: Status, reason?: string) => {
+      const note = status === 'ignored' ? (reason ?? '').trim() : '';
       setBusy((b) => ({ ...b, [id]: true }));
       // optimistic
       setData((prev) => {
@@ -105,6 +169,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         const moved: Job = {
           ...target,
           status,
+          statusReason: note || null,
           statusChangedAt: status === 'new' ? null : new Date().toISOString(),
         };
         const rest = all.filter((j) => j.id !== id);
@@ -117,7 +182,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         await fetch(`/api/jobs/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status }),
+          body: JSON.stringify(note ? { status, reason: note } : { status }),
         });
       } catch {
         /* fall through to reconcile */
@@ -131,6 +196,25 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
       }
     },
     [refresh],
+  );
+
+  const openDismiss = useCallback((id: string, initial = '') => {
+    setDismissing((cur) => (cur === id ? null : id));
+    setReasonDraft(initial);
+  }, []);
+
+  const closeDismiss = useCallback(() => {
+    setDismissing(null);
+    setReasonDraft('');
+  }, []);
+
+  const confirmDismiss = useCallback(
+    async (id: string) => {
+      const note = reasonDraft;
+      closeDismiss();
+      await setStatus(id, 'ignored', note);
+    },
+    [closeDismiss, reasonDraft, setStatus],
   );
 
   const employers = useMemo(() => {
@@ -292,12 +376,24 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                   <button
                     className="btn ghost"
                     disabled={!!busy[job.id]}
-                    onClick={() => void setStatus(job.id, 'ignored')}
+                    aria-expanded={dismissing === job.id}
+                    onClick={() => openDismiss(job.id)}
                   >
                     Not for me
                   </button>
                 </div>
               </div>
+              {dismissing === job.id && (
+                <ReasonComposer
+                  id={job.id}
+                  value={reasonDraft}
+                  onChange={setReasonDraft}
+                  onCancel={closeDismiss}
+                  onSubmit={() => void confirmDismiss(job.id)}
+                  busy={!!busy[job.id]}
+                  submitLabel="Dismiss"
+                />
+              )}
             </article>
           ))}
         </div>
@@ -337,6 +433,12 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       {job.posted && <span>· posted {fmtPosted(job.posted)}</span>}
                       {job.statusChangedAt && <span>· {rel(job.statusChangedAt)}</span>}
                     </div>
+                    {job.statusReason && (
+                      <div className="reason-note">
+                        <span className="reason-label">Why not</span>
+                        {job.statusReason}
+                      </div>
+                    )}
                   </div>
                   <div className="actions">
                     <div className="row">
@@ -348,7 +450,29 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                         Restore
                       </button>
                     </div>
+                    {job.status === 'ignored' && (
+                      <div className="row">
+                        <button
+                          className="btn ghost"
+                          aria-expanded={dismissing === job.id}
+                          onClick={() => openDismiss(job.id, job.statusReason ?? '')}
+                        >
+                          {job.statusReason ? 'Edit note' : 'Add note'}
+                        </button>
+                      </div>
+                    )}
                   </div>
+                  {dismissing === job.id && (
+                    <ReasonComposer
+                      id={job.id}
+                      value={reasonDraft}
+                      onChange={setReasonDraft}
+                      onCancel={closeDismiss}
+                      onSubmit={() => void confirmDismiss(job.id)}
+                      busy={!!busy[job.id]}
+                      submitLabel="Save note"
+                    />
+                  )}
                 </article>
               ))}
             </div>
@@ -360,7 +484,8 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         Built from the <code>job_watch.py</code> run on <code>vez</code>. Matches are filtered to
         population-health / care-coordination / community-health roles in the two corridors, and
         screened for licensure requirements. Your Applied / Not-for-me marks persist in Postgres —
-        nothing is deleted, it just moves to the archive.
+        nothing is deleted, it just moves to the archive. Any note you add when dismissing a job is
+        kept with it, so the filters can be retuned against what you actually rejected.
       </div>
     </main>
   );

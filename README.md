@@ -8,7 +8,7 @@ Two parts that work together:
 | | What it is | Where it runs |
 |---|---|---|
 | **[watcher/](watcher/)** | Scrapes 11 employer job boards daily, filters to roles she can actually apply for, alerts on Telegram | Raspberry Pi (`vez`) via Hermes cron |
-| **[web/](web/)** | Dashboard showing every match, with one-click Apply and Applied / Not-for-me tracking | Vercel + Postgres |
+| **[web/](web/)** | Dashboard showing every match, with one-click Apply, Applied / Not-for-me tracking, and an optional note on each dismissal | Vercel + Postgres |
 
 **Live:** https://pop-health-jobs.vercel.app
 

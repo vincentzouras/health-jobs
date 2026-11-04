@@ -72,14 +72,26 @@ nothing. No LLM in the alert path, so no token cost per run and no invented post
    "must have RN license", "master's required", "LCSW", "position filled", etc. This exists
    because Melmark's $89,440 "Health Care Coordinator" looked perfect and required a PA RN.
 
+Tuning these lists is a feedback loop: every **Not for me** on the dashboard can carry a short
+note saying why, and those notes live in `jobs.status_reason`. Read them back with
+
+```bash
+curl -s https://pop-health-jobs.vercel.app/api/jobs \
+  | jq -r '.archive[] | select(.statusReason) | "\(.employer) — \(.title) — \(.statusReason)"'
+```
+
+then add the recurring ones to `POSITIVE` / `NEGATIVE` / `URL_REJECT` / `DETAIL_REJECT` rather
+than guessing at what to filter next.
+
 ## Live dashboard
 
 **https://pop-health-jobs.vercel.app** — public, no login.
 
 Every run pushes its relevant matches to Postgres on Vercel. On the page she can hit
-**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me**. Marked jobs leave
-the main list but stay in the **Archive** section with a **Restore** button — nothing is ever
-deleted.
+**Apply ↗** (goes straight to the posting), **Applied**, or **Not for me** — which opens a
+one-line note box ("RN license required", "not population health", …) before it commits.
+Marked jobs leave the main list but stay in the **Archive** section with a **Restore** button —
+nothing is ever deleted, and a dismissal note is shown back on the archived card.
 
 ```
 vez (Pi)                            Vercel                         Postgres (Neon)
