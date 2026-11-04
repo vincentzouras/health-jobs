@@ -10,6 +10,10 @@ build/
 dist/
 *.tsbuildinfo
 
+# python
+__pycache__/
+*.py[cod]
+
 # env / secrets
 .env
 .env.local
