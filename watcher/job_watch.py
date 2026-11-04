@@ -129,6 +129,12 @@ ALLOWED_CITIES = [
     "west grove", "avondale", "oxford", "parkesburg", "gap", "chadds ford",
     "paoli", "berwyn", "devon", "wayne", "radnor", "phoenixville", "pottstown",
     "bala cynwyd", "wynnewood", "bryn mawr", "media", "chester", "glen mills",
+    # Delaware County boroughs - a county job can sit anywhere in the county, and all of
+    # these are within ~25 min of West Chester / Media.
+    "drexel hill", "upper darby", "havertown", "haverford", "lansdowne", "yeadon",
+    "darby", "collingdale", "sharon hill", "clifton heights", "folcroft", "ridley park",
+    "prospect park", "brookhaven", "aston", "boothwyn", "holmes", "broomall",
+    "springfield", "swarthmore", "villanova",
     "norristown", "king of prussia", "newtown square", "plymouth meeting",
     "blue bell", "lansdale", "horsham", "willow grove", "abington", "jenkintown",
     "philadelphia", "collegeville", "west point",
@@ -1017,9 +1023,17 @@ _LOC_IN_BODY = re.compile(
 )
 
 
+# Pay/shift labels that sit in front of a city in some ATS templates
+# ("Annually Location Drexel Hill, PA").
+_CITY_LABELS = {
+    "annually", "hourly", "salary", "location", "locations", "shift", "schedule",
+    "department", "posted", "job", "type", "category", "status", "position",
+}
+
+
 def _trim_city(city: str) -> str:
     """Snap "Patient Access Representative Reading" down to "Reading"."""
-    words = city.split()
+    words = [w for w in city.split() if w.lower().strip(":,") not in _CITY_LABELS] or city.split()
     for n in (3, 2, 1):
         if len(words) >= n and _CITY_RE.fullmatch(" ".join(words[-n:])):
             return " ".join(words[-n:])
@@ -1249,6 +1263,7 @@ def selftest() -> int:
         ("Care Coordinator", "York, PA", True),
         ("Care Coordinator", "Gettysburg, PA", True),
         ("Care Coordinator", "Ephrata, PA", True),
+        ("Benefits Coordinator", "Drexel Hill, PA", True),
     ]
     # Note: the RN-required "Health Care Coordinator" is expected to PASS the title
     # filter (title looks relevant); it is caught by the description screen below.
@@ -1407,6 +1422,8 @@ def selftest() -> int:
         # Tower publishes the full state name, not the abbreviation
         ("Patient Access Representative Reading, Pennsylvania Full Time", "Reading, PA"),
         ("Patient Services Rep Philadelphia, Pennsylvania 40 hrs", "Philadelphia, PA"),
+        # A label sitting in front of the city must not become part of it
+        ("Benefits Coordinator Annually Location Drexel Hill, PA Full Time", "Drexel Hill, PA"),
         ("Skip to main content | Careers Search All Jobs", ""),
         ("", ""),
     ]
@@ -1476,10 +1493,13 @@ def backfill_location(st) -> int:
     # State written before this existed has no location_guessed flag, so also treat "the city
     # equals this employer's default" as a guess - that is exactly what the old code stored.
     defaults = {s["name"]: s["default_location"] for s in SOURCES if s.get("default_location")}
+    # Only postings that are currently on the board: `seen` holds every posting ever observed
+    # (hundreds), and reading a detail page for each would take the better part of an hour.
     todo = [(k, v) for k, v in seen.items()
             if v.get("url") and k not in known
             and (v.get("location_guessed")
-                 or v.get("location") == defaults.get(v.get("employer")))]
+                 or v.get("location") == defaults.get(v.get("employer")))
+            and classify(v.get("title", ""), v.get("location", ""), v.get("url", ""))[0]]
     print("backfill: %d postings with a guessed city" % len(todo))
     updates, hits, moved = {}, 0, []
     for k, v in todo:
