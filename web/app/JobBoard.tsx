@@ -255,13 +255,11 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   return (
     <main className="wrap">
       <header className="header">
-        <h1>Job Board</h1>
+        <h1>Population Health Jobs</h1>
         <div className="sub">
-          Population health roles · Downingtown / Wilmington and York corridors
+          Downingtown / Wilmington / York areas
           <br />
-          Last checked by the Pi{' '}
-          <strong>{rel(data.meta.lastIngest)}</strong>
-          {data.meta.lastIngest && !mounted ? '' : ''}
+          Last checked <strong>{rel(data.meta.lastIngest)}</strong>
         </div>
         {!data.meta.db && (
           <div className="banner err">
