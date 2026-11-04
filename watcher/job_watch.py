@@ -19,6 +19,7 @@ Exit codes: 0 ok, 1 total source failure (so Hermes surfaces it), 0 otherwise.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import random
 import re
@@ -92,12 +93,21 @@ def fetch_suppressed() -> set:
         return set()
 
 
+def scanner_version() -> str:
+    """Hash of the running file, so the board can prove which build fed it."""
+    try:
+        return hashlib.md5(Path(__file__).read_bytes()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
 def push_snapshot(relevant_jobs: dict, run_at: str) -> str:
     """Send the run's relevant postings to the Vercel dashboard. Never fatal."""
     if not WEB_URL or not WEB_TOKEN:
         return "skipped (JOB_BOARD_URL / JOB_BOARD_TOKEN not set)"
     payload = {
         "run_at": run_at,
+        "scanner": scanner_version(),
         "jobs": [
             {
                 "employer": j["employer"],

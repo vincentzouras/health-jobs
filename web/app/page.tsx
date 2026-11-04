@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 
 async function load() {
   if (!hasDb()) {
-    return { active: [], archive: [], meta: { lastIngest: null, db: false } };
+    return { active: [], archive: [], meta: { lastIngest: null, scannerVersion: null, db: false } };
   }
   try {
     await ensureSchema();
@@ -15,17 +15,24 @@ async function load() {
         ORDER BY posted DESC NULLS LAST, first_seen DESC`,
     );
     const jobs = rows.map(rowToJob);
-    const meta = await pool().query(`SELECT value FROM meta WHERE key = 'last_ingest'`);
+    const meta = await pool().query(
+      `SELECT key, value FROM meta WHERE key IN ('last_ingest','scanner_version')`,
+    );
+    const metaMap = Object.fromEntries(meta.rows.map((r) => [String(r.key), r.value as string]));
     return {
       active: jobs.filter((j) => j.status === 'new'),
       archive: jobs.filter((j) => j.status !== 'new'),
-      meta: { lastIngest: meta.rows[0]?.value ?? null, db: true },
+      meta: {
+        lastIngest: metaMap.last_ingest ?? null,
+        scannerVersion: metaMap.scanner_version ?? null,
+        db: true,
+      },
     };
   } catch (err) {
     return {
       active: [],
       archive: [],
-      meta: { lastIngest: null, db: true },
+      meta: { lastIngest: null, scannerVersion: null, db: true },
       error: String(err).slice(0, 300),
     };
   }

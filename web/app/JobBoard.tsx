@@ -23,7 +23,7 @@ import { employerColor, type EmployerColor } from './employerColor';
 interface ApiPayload {
   active: Job[];
   archive: Job[];
-  meta: { lastIngest: string | null; db: boolean };
+  meta: { lastIngest: string | null; scannerVersion: string | null; db: boolean };
   error?: string;
 }
 
@@ -349,6 +349,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Last checked {rel(data.meta.lastIngest)}
+            {data.meta.scannerVersion && ` · scanner ${data.meta.scannerVersion}`}
           </Typography>
         </Stack>
 

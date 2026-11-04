@@ -25,7 +25,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  let body: { jobs?: IncomingJob[]; run_at?: string };
+  let body: { jobs?: IncomingJob[]; run_at?: string; scanner?: string };
   try {
     body = await req.json();
   } catch {
@@ -70,6 +70,14 @@ export async function POST(req: Request) {
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [body.run_at || new Date().toISOString()],
     );
+    if (typeof body.scanner === 'string' && body.scanner.trim()) {
+      // Proof of which scanner build fed the board, so Pi/repo drift is visible.
+      await client.query(
+        `INSERT INTO meta (key, value) VALUES ('scanner_version', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [body.scanner.trim().slice(0, 40)],
+      );
+    }
 
     await client.query('COMMIT');
     return NextResponse.json({ ok: true, inserted, updated, total: inserted + updated });

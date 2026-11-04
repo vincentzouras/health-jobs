@@ -22,11 +22,16 @@ export async function GET() {
     const active = jobs.filter((j) => j.status === 'new');
     const archive = jobs.filter((j) => j.status !== 'new');
 
-    const meta = await pool().query(`SELECT value FROM meta WHERE key = 'last_ingest'`);
+    const meta = await pool().query(`SELECT key, value FROM meta WHERE key IN ('last_ingest','scanner_version')`);
+    const metaMap = Object.fromEntries(meta.rows.map((r) => [String(r.key), r.value as string]));
     return NextResponse.json({
       active,
       archive,
-      meta: { lastIngest: meta.rows[0]?.value ?? null, db: true },
+      meta: {
+        lastIngest: metaMap.last_ingest ?? null,
+        scannerVersion: metaMap.scanner_version ?? null,
+        db: true,
+      },
     });
   } catch (err) {
     return NextResponse.json(
