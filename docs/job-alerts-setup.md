@@ -69,8 +69,9 @@ nothing. No LLM in the alert path, so no token cost per run and no invented post
    "District Of **Columbia**" no longer matches "Columbia, PA" and "Dorchester" no longer
    matches "Chester, PA". A ~45-state blocklist rejects anything outside PA/DE.
    **Unknown location = dropped**, never guessed — except for seven sources that publish no
-   city at all (Main Line, WellSpan, Tower, PHMC, and the three county GovernmentJobs boards),
-   which carry an explicit `default_location`.
+   city on the card (Main Line, WellSpan, Tower, PHMC, and the three county GovernmentJobs
+   boards), which carry a `default_location` **as a stand-in only**: the detail page is read and
+   `classify()` re-run on the real city before the posting reaches the board (see below).
    **Kent/Sussex County DE is out**: Dover, Smyrna and Milford are another 60–90 min past
    Wilmington rather than on the commute to it. The check keys off the state, so "Dover, PA"
    (York County) still passes. The reachable map is West Chester ⇄ Wilmington along US-202/I-95,
@@ -169,7 +170,7 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **106/106 pass** (76 title/location, 11 description, 3 Jefferson URL, 4 Penn table-layout, 11 posted-date) |
+| `--selftest` | **120/120 pass** (73 title/location, 11 description, 3 Jefferson URL, 4 Penn table-layout, 14 posted-date, 9 location-from-detail) |
 | Baseline | **561 postings -> 55 relevant, 0 errors** |
 | Board population | 55 active rows, **15 with a real posted date**, 40 on the "found" fallback |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |
@@ -192,6 +193,7 @@ $PY ~/.hermes/scripts/job_watch.py --dump --dump-all
 $PY ~/.hermes/scripts/job_watch.py --selftest  # run filter tests after ANY rule change
 $PY ~/.hermes/scripts/job_watch.py --baseline  # silence everything currently live
 $PY ~/.hermes/scripts/job_watch.py --backfill-posted  # read posted dates for jobs lacking one
+$PY ~/.hermes/scripts/job_watch.py --backfill-location  # replace a guessed city with the real one
 
 cd ~/.hermes/hermes-agent
 ./hermes cron list
@@ -219,9 +221,12 @@ flooding you on the next run.
 
 - **Title filters can't read experience requirements.** A role wanting 5 years still surfaces.
   Treat alerts as "worth a look," not "definitely eligible."
-- **Tower / Main Line / WellSpan cards omit the city**, so they use a `default_location`. A Tower
-  posting at a far-flung facility would read as in-corridor. Their footprints are SE PA, so risk
-  is small but real.
+- **Tower / Main Line / WellSpan cards omit the city**, so they use a `default_location`. That
+  default is no longer trusted: the detail page's real city is read for every new match and
+  stored in `state.locations`, and a city outside the corridor drops the posting. This caught
+  a WellSpan "Social Service Coordinator" advertised as York but located at Chambersburg
+  Hospital. Run `--backfill-location` once after pulling this to correct postings recorded
+  before the check existed.
 - **AmeriHealth needs an 11 s render wait** (Phenom renders the list late); at 5 s the cards are
   still empty and everything drops as "unknown location".
 - **~13 minutes per run** — full-board pagination (including all ~78 Chester County rows) plus

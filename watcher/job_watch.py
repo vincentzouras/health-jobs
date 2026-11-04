@@ -162,7 +162,9 @@ BAD_LOCATION = re.compile(
     r"\b(?:NJ|NY|MD|VA|WV|OH|DC|CT|MA|NH|NC|SC|GA|FL|TX|IL|MI|IN|MO|TN|KY|WI|MN|"
     r"OR|CA|AZ|CO|NV|UT|AL|MS|AR|LA|OK|KS|NE|IA|ID|MT|WY|AK|HI|VT|ME)\.?(?![a-z])|"
     r"pittsburgh|erie|scranton|wilkes|altoona|johnstown|state college|"
-    r"stroudsburg|hazleton|williamsport|bethlehem|allentown|easton",
+    r"stroudsburg|hazleton|williamsport|bethlehem|allentown|easton|"
+    # Franklin County: WellSpan's Chambersburg / Waynesboro hospitals are ~50 min past York.
+    r"chambersburg|waynesboro|shippensburg|mercersburg|greencastle",
     re.I,
 )
 
@@ -1003,6 +1005,55 @@ def posted_from_body(text: str):
     return parse_posted(m.group(1)) if m else None
 
 
+# "Chambersburg,PA" / "York, PA" / "Reading, Pennsylvania" — the comma may have no space.
+_STATE_ABBR = {
+    "pennsylvania": "PA", "new jersey": "NJ", "delaware": "DE", "maryland": "MD",
+    "new york": "NY", "west virginia": "WV", "virginia": "VA",
+}
+_LOC_IN_BODY = re.compile(
+    r"([A-Z][A-Za-z.'\-]*(?:[ ][A-Z][A-Za-z.'\-]*){0,3}),\s*"
+    r"(PA|NJ|DE|MD|NY|WV|VA|Pennsylvania|New Jersey|Delaware|Maryland|New York|"
+    r"West Virginia|Virginia)\b"
+)
+
+
+def _trim_city(city: str) -> str:
+    """Snap "Patient Access Representative Reading" down to "Reading"."""
+    words = city.split()
+    for n in (3, 2, 1):
+        if len(words) >= n and _CITY_RE.fullmatch(" ".join(words[-n:])):
+            return " ".join(words[-n:])
+    return " ".join(words[-4:])
+
+
+def location_from_body(text: str) -> str:
+    """Read the posting's real city off a detail page.
+
+    Multi-site systems publish a per-posting city but hide it from the results cards, so the
+    source config carries a default (WellSpan -> "York, PA"). That default is a guess and
+    WellSpan posts in Chambersburg, Gettysburg, Ephrata and Lebanon too, so the detail page
+    wins. A street-numbered address is preferred over a bare mention of the corporate city.
+    """
+    if not text:
+        return ""
+    fallback = ""
+    for m in _LOC_IN_BODY.finditer(text):
+        city, state = m.group(1).strip(), m.group(2)
+        state = _STATE_ABBR.get(state.lower(), state.upper())
+        # Drop leading noise the greedy city group can swallow ("Hospital, York, PA").
+        city = re.sub(r"^(?:Hospital|Center|Medical|Health|The)\s+", "", city).strip()
+        city = _trim_city(city)
+        if len(city) < 3:
+            continue
+        cand = "%s, %s" % (city, state)
+        if not fallback:
+            fallback = cand
+        window = text[max(0, m.start() - 90):m.start()]
+        if re.search(r"\b\d{1,6}\b", window):
+            return cand
+    return fallback
+
+
 def collect(prev_health=None):
     prev_health = prev_health or {}
     found, errors = {}, []
@@ -1051,7 +1102,8 @@ def collect(prev_health=None):
                 jid, title, loc, link = parsed
                 if not jid or not title:
                     continue
-                if not loc:
+                guessed_loc = not loc
+                if guessed_loc:
                     loc = src.get("default_location", "")
                 key = "%s|%s" % (src["name"], jid)
                 if key in found:
@@ -1065,6 +1117,8 @@ def collect(prev_health=None):
                     "location": re.sub(r"\s+", " ", loc)[:80],
                     "url": link,
                     "posted": parse_posted(item.get("d")),
+                    # True when the city came from the source's default rather than the card.
+                    "location_guessed": guessed_loc,
                 }
                 new_here += 1
 
@@ -1189,6 +1243,12 @@ def selftest() -> int:
         ("911 Dispatcher", "West Chester, PA", False),
         ("Deputy Sheriff III (Sergeant)", "West Chester, PA", False),
         ("Grant Writer", "Southeastern PA", False),
+        # WellSpan is multi-site: Chambersburg/Waynesboro are Franklin County, well past York
+        ("Social Service Coordinator", "Chambersburg, PA", False),
+        ("Care Coordinator", "Waynesboro, PA", False),
+        ("Care Coordinator", "York, PA", True),
+        ("Care Coordinator", "Gettysburg, PA", True),
+        ("Care Coordinator", "Ephrata, PA", True),
     ]
     # Note: the RN-required "Health Care Coordinator" is expected to PASS the title
     # filter (title looks relevant); it is caught by the description screen below.
@@ -1329,12 +1389,42 @@ def selftest() -> int:
             postfails += 1
         print("%-6s %-28s -> %r" % ("PASS" if ok else "FAIL", body[:28].replace("\n", " "), got))
 
+    # A guessed default location must be replaced by the real city on the detail page.
+    print("\n--- location from detail page ---")
+    lcases = [
+        ("Social Service Coordinator Apply Now 112 N 7th St-Chambersburg Hospital, "
+         "Chambersburg,PA Part Time Day Shift",
+         "Chambersburg, PA"),
+        ("Social Service Coordinator 112 N 7th St-Chambersburg Hospital, Chambersburg,PA "
+         "... WellSpan Health, York, PA is one of America's Greatest Places to work",
+         "Chambersburg, PA"),
+        ("Care Coordinator WellSpan York Hospital, York, PA Full Time",
+         "York, PA"),
+        ("Rehab Liaison 1001 S George St-York Hospital, York,PA",
+         "York, PA"),
+        ("Helper 4 Spruce St-Ephrata Community Hospital, Ephrata,PA",
+         "Ephrata, PA"),
+        # Tower publishes the full state name, not the abbreviation
+        ("Patient Access Representative Reading, Pennsylvania Full Time", "Reading, PA"),
+        ("Patient Services Rep Philadelphia, Pennsylvania 40 hrs", "Philadelphia, PA"),
+        ("Skip to main content | Careers Search All Jobs", ""),
+        ("", ""),
+    ]
+    lfails = 0
+    for body, want in lcases:
+        got = location_from_body(body)
+        ok = got == want
+        if not ok:
+            lfails += 1
+        print("%-6s %-46s -> %r" % ("PASS" if ok else "FAIL", body[:46].replace("\n", " "), got))
+
     print("\n%d title failures, %d detail failures, %d jefferson failures, %d penn failures, "
-          "%d posted failures, %d cases total"
-          % (fails, dfails, jfails, pfails, postfails,
-             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases) + len(bcases)))
+          "%d posted failures, %d location failures, %d cases total"
+          % (fails, dfails, jfails, pfails, postfails, lfails,
+             len(corpus) + len(detail_corpus) + len(jcases) + len(pcases) + len(dcases)
+             + len(bcases) + len(lcases)))
     return 0 if (fails == 0 and dfails == 0 and jfails == 0 and pfails == 0
-                 and postfails == 0) else 1
+                 and postfails == 0 and lfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -1372,6 +1462,57 @@ def backfill_posted(st) -> int:
     return 0
 
 
+def backfill_location(st) -> int:
+    """One-off pass: replace a guessed city with the one printed on the posting.
+
+    Sources whose result cards omit the city carry a `default_location` (WellSpan -> "York,
+    PA", Tower -> "Southeastern PA"). The default is only ever a stand-in: a WellSpan job can
+    be in Chambersburg or Lancaster, and a Tower job in Philadelphia. Reads the detail page for
+    every known posting still carrying a guess and records the real city in `st["locations"]`,
+    which every later run applies before `classify()`.
+    """
+    seen = st.get("seen", {})
+    known = st.setdefault("locations", {})
+    # State written before this existed has no location_guessed flag, so also treat "the city
+    # equals this employer's default" as a guess - that is exactly what the old code stored.
+    defaults = {s["name"]: s["default_location"] for s in SOURCES if s.get("default_location")}
+    todo = [(k, v) for k, v in seen.items()
+            if v.get("url") and k not in known
+            and (v.get("location_guessed")
+                 or v.get("location") == defaults.get(v.get("employer")))]
+    print("backfill: %d postings with a guessed city" % len(todo))
+    updates, hits, moved = {}, 0, []
+    for k, v in todo:
+        try:
+            body, _posted = posted_for(v["url"])
+        except Exception as e:
+            print("  skip %-40s %s" % ((v.get("title") or "")[:40], str(e)[:60]))
+            continue
+        real = location_from_body(body)
+        if not real:
+            print("  %-22s %-40s -> no city on page" % (v["employer"][:22], (v.get("title") or "")[:40]))
+            continue
+        known[k] = real
+        hits += 1
+        ok, why = classify(v.get("title", ""), real, v.get("url", ""))
+        print("  %-22s %-38s -> %-20s %s"
+              % (v["employer"][:22], (v.get("title") or "")[:38], real, "keep" if ok else "DROP (%s)" % why))
+        if ok:
+            updates[k] = {"employer": v["employer"], "id": k.split("|", 1)[1],
+                          "title": v["title"], "location": real,
+                          "url": v["url"], "posted": v.get("posted")}
+        else:
+            moved.append((v.get("employer"), v.get("title"), real))
+    save_state(st)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print("resolved %d of %d" % (hits, len(todo)))
+    if updates:
+        print("dashboard sync: %s" % push_snapshot(updates, now))
+    for emp, title, real in moved:
+        print("OUT OF CORRIDOR: %s | %s | %s (purge this row on the board)" % (emp, title, real))
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--selftest" in args:
@@ -1380,6 +1521,8 @@ def main() -> int:
     st = load_state()
     if "--backfill-posted" in args:
         return backfill_posted(st)
+    if "--backfill-location" in args:
+        return backfill_location(st)
     found, errors = collect(st.get("source_health", {}))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1396,7 +1539,12 @@ def main() -> int:
     st["source_health"] = health
 
     relevant, rejected = {}, {}
+    verified_loc = st.get("locations", {})
     for key, job in found.items():
+        # A city read off a detail page beats a source default, permanently.
+        if key in verified_loc:
+            job["location"] = verified_loc[key]
+            job["location_guessed"] = False
         ok, reason = classify(job["title"], job["location"], job.get("url", ""))
         (relevant if ok else rejected)[key] = dict(job, reason=reason)
 
@@ -1433,6 +1581,10 @@ def main() -> int:
         entry = seen.get(key) or {"first_seen": now}
         entry.update({"title": job["title"], "employer": job["employer"],
                       "location": job["location"], "url": job["url"], "last_seen": now})
+        if job.get("location_guessed"):
+            entry["location_guessed"] = True
+        else:
+            entry.pop("location_guessed", None)
         if job.get("posted"):
             entry["posted"] = job["posted"]
         seen[key] = entry
@@ -1442,6 +1594,47 @@ def main() -> int:
     st["last_counts"] = {"found": len(found), "relevant": len(relevant),
                          "rejected": len(rejected), "new": len(new_keys),
                          "errors": len(errors)}
+
+    # Detail screen: only for NEW matches (a handful per week), so this is cheap. The same
+    # fetch doubles as the only chance to read a posted date for sources whose results pages
+    # omit one, and it is where a guessed city gets corrected - a multi-site system's cards
+    # carry no city, so "York, PA" is the source default and Chambersburg would slip through.
+    # Runs BEFORE the dashboard push so a wrong location never reaches the board.
+    verified, dropped = [], []
+    for k in sorted(new_keys):
+        job = relevant[k]
+        if len(verified) >= 8:
+            verified.append(k)
+            continue
+        try:
+            body, found_posted = posted_for(job["url"])
+        except Exception:
+            body, found_posted = "", None
+        if not job.get("posted") and found_posted:
+            job["posted"] = found_posted
+            st["seen"].setdefault(k, {})["posted"] = found_posted
+        if job.get("location_guessed"):
+            real = location_from_body(body)
+            if real:
+                job["location"] = real
+                job["location_guessed"] = False
+                # Persist, or the next run re-derives the guess from the card and overwrites it.
+                st.setdefault("locations", {})[k] = real
+                ok, why = classify(job["title"], real, job.get("url", ""))
+                if not ok:
+                    dropped.append((k, "real location %s (%s)" % (real, why)))
+                    st["seen"].setdefault(k, {})["location_rejected"] = real
+                    relevant.pop(k, None)
+                    continue
+        bad, phrase = detail_reject(body)
+        if bad:
+            dropped.append((k, phrase))
+            st["seen"].setdefault(k, {})["detail_rejected"] = phrase
+            relevant.pop(k, None)
+        else:
+            verified.append(k)
+    new_keys = verified
+    save_state(st)
 
     baseline = (not st.get("baseline_done")) or ("--baseline" in args)
     if baseline:
@@ -1467,52 +1660,15 @@ def main() -> int:
     save_state(st)
 
     if not new_keys:
-        if health_warnings:
-            print("⚠️ Job watch problem (no new jobs to report)\n")
-            for w in health_warnings:
-                print("• %s" % w)
-            print("\nChecked %d postings across %d employers at %s"
-                  % (len(found), len(SOURCES), now))
-        if str(st.get("web_sync", "")).startswith("FAILED"):
-            print("⚠️ Dashboard sync %s" % st["web_sync"])
-        return 0
-
-    # Description-level screen: only for NEW matches (a handful per week), so this is cheap.
-    # The same fetch doubles as the only cheap chance to read a posted date for sources
-    # whose results pages omit one.
-    verified, dropped, dated = [], [], {}
-    for k in sorted(new_keys):
-        job = relevant[k]
-        if len(verified) >= 8:
-            verified.append(k)
-            continue
-        try:
-            body, found_posted = posted_for(job["url"])
-        except Exception:
-            body, found_posted = "", None
-        if not job.get("posted") and found_posted:
-            job["posted"] = found_posted
-            st["seen"].setdefault(k, {})["posted"] = found_posted
-            dated[k] = job
-        bad, phrase = detail_reject(body)
-        if bad:
-            dropped.append((k, phrase))
-            st["seen"][k]["detail_rejected"] = phrase
-        else:
-            verified.append(k)
-    if dated:
-        st["web_sync"] = push_snapshot(dated, now)
-    save_state(st)
-
-    new_keys = verified
-    if not new_keys:
         if dropped:
-            print("job watch: %d new match(es) screened out by hard requirements (%s)"
+            print("job watch: %d new match(es) screened out (%s)"
                   % (len(dropped), dropped[0][1]))
         if health_warnings:
             print("⚠️ Job watch problem%s\n" % ("" if len(health_warnings) == 1 else "s"))
             for w in health_warnings:
                 print("• %s" % w)
+        if str(st.get("web_sync", "")).startswith("FAILED"):
+            print("⚠️ Dashboard sync %s" % st["web_sync"])
         return 0
 
     lines = ["🔔 %d new job match%s\n" % (len(new_keys), "" if len(new_keys) == 1 else "es")]

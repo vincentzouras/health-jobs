@@ -45,9 +45,10 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 106 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 120 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
+$PY job_watch.py --backfill-location # replace a source's guessed city with the real one
 ```
 
 ## Geography
@@ -60,6 +61,24 @@ Two live corridors, both active:
 
 Kent/Sussex County DE (Dover, Smyrna, Milford) is rejected: it is another 60–90 min *past*
 Wilmington, not on the way to it. `FAR_DE` keys off the state suffix so Dover, PA stays in.
+
+## Location: a default is a guess, the posting wins
+
+Seven sources publish no city on their result cards, so they carry a `default_location`
+(WellSpan → "York, PA", Tower → "Southeastern PA", PHMC → "Philadelphia, PA", Main Line, and the
+three county GovernmentJobs boards). Those defaults are only stand-ins. WellSpan's board spans
+York, Gettysburg, Ephrata, Lancaster and Lebanon — and **Chambersburg**, which is Franklin
+County, ~50 min past York. A "Social Service Coordinator" at Chambersburg Hospital was being
+shown as York, PA.
+
+So for any match whose city came from a default, the detail page is read and `classify()` is run
+again on the real city. The verified city is stored in `state.locations` and applied before
+`classify()` on every later run, and the check runs *before* the dashboard push, so a wrong city
+never reaches the board. A real city that is out of corridor drops the posting and records
+`location_rejected`.
+
+`--backfill-location` re-reads the real city for postings recorded before this existed and lists
+anything that turns out to be out of corridor.
 
 ## What counts as a match
 
