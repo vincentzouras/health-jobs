@@ -56,13 +56,17 @@ fi
 
 # 3. schedule
 if [ -x "$HERMES/hermes" ]; then
-  LINE=$("$HERMES/hermes" cron list 2>/dev/null | grep -A6 "\\[$CRON_ID\\]" | tr -s ' ')
-  case "$LINE" in
-    *active*) ok "cron $CRON_ID" "active, 0 8 * * *" ;;
-    *) bad "cron $CRON_ID" "not active" ;;
-  esac
-  AUTODEPLOY=$( ( "$HERMES/hermes" cron list 2>/dev/null || true ) | grep -c "deploy-job-watch" || true )
-  [ "${AUTODEPLOY:-0}" -ge 1 ] && ok "cron auto-deploy" "scheduled" || bad "cron auto-deploy" "not scheduled (drift possible)"
+  LIST=$("$HERMES/hermes" cron list 2>/dev/null || true)
+  if printf '%s' "$LIST" | grep -A2 "$CRON_ID" | grep -q '\[active\]'; then
+    ok "cron $CRON_ID" "active, 0 8 * * *"
+  else
+    bad "cron $CRON_ID" "not active"
+  fi
+  if printf '%s' "$LIST" | grep -q "deploy-job-watch"; then
+    ok "cron auto-deploy" "scheduled"
+  else
+    bad "cron auto-deploy" "not scheduled (drift possible)"
+  fi
 else
   bad "cron" "hermes not found at $HERMES"
 fi
@@ -114,8 +118,10 @@ fi
 # 6. browser + credentials
 CJ=$(curl -s -m 8 http://127.0.0.1:9377/health 2>/dev/null || true)
 case "$CJ" in
-  *'"browserRunning":true'*) ok "camofox" "$(printf '%s' "$CJ" | grep -o '"rssMb":[0-9]*')" ;;
-  *) bad "camofox" "health check failed" ;;
+  *'"browserRunning":true'*) ok "camofox" "browser up" ;;
+  *"browser_rss_pressure"*) bad "camofox" "killed for RSS pressure - the next run self-heals, or POST /start" ;;
+  "") bad "camofox" "no response on 127.0.0.1:9377" ;;
+  *) bad "camofox" "$(printf '%s' "$CJ" | cut -c1-90)" ;;
 esac
 [ -n "${JOB_BOARD_TOKEN:-}" ] && ok "JOB_BOARD_TOKEN" "set" || bad "JOB_BOARD_TOKEN" "missing in ~/.hermes/.env"
 [ -n "${JOB_BOARD_URL:-}" ] && info "JOB_BOARD_URL" "$JOB_BOARD_URL" || info "JOB_BOARD_URL" "default (production)"
