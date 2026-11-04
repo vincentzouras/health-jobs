@@ -5,11 +5,18 @@ _Deployed 2026-11-03, expanded 2026-11-04 · profile: default · owner: vincent@
 
 | Piece | Location |
 |---|---|
-| Script | `~/.hermes/scripts/job_watch.py` |
+| **Source (this repo)** | [`watcher/job_watch.py`](../watcher/job_watch.py) |
+| Script on the Pi | `~/.hermes/scripts/job_watch.py` — copy of the above |
 | State | `~/.hermes/job-watches/job-alerts-state.json` |
 | Last-run log | `~/.hermes/job-watches/job-alerts-last-run.json` |
 | Cron job | `8e7a83cfdc37` — daily 08:00, `--no-agent`, delivers to Telegram |
 | Browser | Camofox, `127.0.0.1:9377` (`camofox.service`) |
+
+To update the Pi after editing the repo:
+
+```bash
+scp watcher/job_watch.py vincent@vez:~/.hermes/scripts/job_watch.py
+```
 
 Mode is **`--no-agent`**: the script's stdout *is* the message, and empty stdout sends
 nothing. No LLM in the alert path, so no token cost per run and no invented postings.
@@ -88,7 +95,9 @@ The suppression call is a safety net, not the primary dedupe — `seen` already 
 re-alerting. It matters if a baseline is ever reset or a new source is added, so jobs she has
 already applied to don't come back as new.
 
-Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in `web/`.
+Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in
+[`web/`](../web/), deployed by Vercel on push to `main` with **Root Directory = `web`**.
+Repo: `github.com/vincentzouras/health-jobs`.
 `INGEST_TOKEN` is set in Vercel (production + preview) and in `~/.hermes/.env` on the Pi.
 
 ## What self-heals vs. what alerts you
