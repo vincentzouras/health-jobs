@@ -13,15 +13,18 @@ interface IncomingJob {
   posted?: string | null;
 }
 
-/** A route card: the drive from the pinned origin, as a polyline plus its time and distance. */
+/** A route card: the drive from one of the two cluster pins, as a polyline plus its numbers. */
 interface IncomingMap {
   employer: string;
   job_id: string;
   drive_min?: number | null;
   drive_mi?: number | null;
+  cluster?: string | null;
   origin_label?: string | null;
   geometry: string;
 }
+
+const CLUSTERS = new Set(['york', 'west_chester']);
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -35,7 +38,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  let body: { jobs?: IncomingJob[]; maps?: IncomingMap[]; run_at?: string; scanner?: string };
+  let body: {
+    jobs?: IncomingJob[];
+    maps?: IncomingMap[];
+    run_at?: string;
+    scanner?: string;
+    /** "This list is the whole board": absent rows stop being active. */
+    full?: boolean;
+  };
   try {
     body = await req.json();
   } catch {
@@ -56,10 +66,13 @@ export async function POST(req: Request) {
     let updated = 0;
     let mapsStored = 0;
     let mapsSkipped = 0;
+    let retired = 0;
+    const liveIds: string[] = [];
 
     for (const j of jobs) {
       if (!j || !j.employer || !j.job_id || !j.title) continue;
       const id = jobId(j.employer, String(j.job_id));
+      liveIds.push(id);
       const posted = typeof j.posted === 'string' && DATE_ONLY.test(j.posted) ? j.posted : null;
       const res = await client.query(
         `INSERT INTO jobs (id, job_key, employer, title, location, url, posted, last_seen)
@@ -70,12 +83,26 @@ export async function POST(req: Request) {
                location  = COALESCE(EXCLUDED.location, jobs.location),
                url       = COALESCE(EXCLUDED.url, jobs.url),
                posted    = COALESCE(EXCLUDED.posted, jobs.posted),
+               -- Back in range after being retired: it is a live posting again.
+               status    = CASE WHEN jobs.status = 'retired' THEN 'new' ELSE jobs.status END,
                last_seen = now()
          RETURNING (xmax = 0) AS was_inserted`,
         [id, String(j.job_id), j.employer, j.title, j.location ?? null, j.url ?? null, posted],
       );
       if (res.rows[0]?.was_inserted) inserted += 1;
       else updated += 1;
+    }
+
+    // The Pi sends its whole board each morning, so anything it no longer lists has fallen
+    // outside the 50 minute boundary. Retire those rather than leaving them on the board.
+    if (body.full === true && liveIds.length > 0) {
+      const res = await client.query(
+        `UPDATE jobs
+            SET status = 'retired', status_changed_at = now()
+          WHERE status = 'new' AND NOT (id = ANY($1::text[]))`,
+        [liveIds],
+      );
+      retired = res.rowCount ?? 0;
     }
 
     for (const m of maps) {
@@ -87,16 +114,18 @@ export async function POST(req: Request) {
         mapsSkipped += 1;
         continue;
       }
+      const cluster = typeof m.cluster === 'string' && CLUSTERS.has(m.cluster) ? m.cluster : null;
       const { rowCount } = await client.query(
         // Only for a job that still exists: the board purges addressed rows, and a map for a
         // gone job must be skipped rather than violating the foreign key and failing the batch.
-        `INSERT INTO job_maps (id, geometry, drive_min, drive_mi, origin_label, generated_at)
-         SELECT $1, $2, $3, $4, $5, now()
+        `INSERT INTO job_maps (id, geometry, drive_min, drive_mi, cluster, origin_label, generated_at)
+         SELECT $1, $2, $3, $4, $5, $6, now()
           WHERE EXISTS (SELECT 1 FROM jobs WHERE id = $1)
          ON CONFLICT (id) DO UPDATE
            SET geometry     = EXCLUDED.geometry,
                drive_min    = EXCLUDED.drive_min,
                drive_mi     = EXCLUDED.drive_mi,
+               cluster      = EXCLUDED.cluster,
                origin_label = EXCLUDED.origin_label,
                generated_at = now()`,
         [
@@ -104,6 +133,7 @@ export async function POST(req: Request) {
           geometry,
           Number.isFinite(Number(m.drive_min)) ? Math.round(Number(m.drive_min)) : null,
           Number.isFinite(Number(m.drive_mi)) ? Number(m.drive_mi) : null,
+          cluster,
           typeof m.origin_label === 'string' ? m.origin_label.slice(0, 80) : null,
         ],
       );
@@ -131,6 +161,7 @@ export async function POST(req: Request) {
       inserted,
       updated,
       total: inserted + updated,
+      retired,
       maps: mapsStored,
       mapsSkipped,
     });

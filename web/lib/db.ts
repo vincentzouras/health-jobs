@@ -1,7 +1,11 @@
 import { Pool } from 'pg';
 import crypto from 'node:crypto';
+import type { Area } from './areas';
 
-export type Status = 'new' | 'applied' | 'ignored';
+export type { Area } from './areas';
+export { AREA_LABEL, AREAS } from './areas';
+
+export type Status = 'new' | 'applied' | 'ignored' | 'retired';
 
 export interface Job {
   id: string;
@@ -16,10 +20,12 @@ export interface Job {
   firstSeen: string;
   lastSeen: string;
   statusChangedAt: string | null;
-  /** Present when the Pi resolved a route from the pinned origin to this posting. */
+  /** Present when the Pi resolved a route from one of the two cluster pins. */
   hasMap: boolean;
   driveMin: number | null;
   driveMi: number | null;
+  /** Which cluster this posting belongs to: the nearer of the two pins. */
+  area: Area | null;
   /** Encoded polyline (precision 5) of the drive; the browser decodes it to draw the map. */
   mapGeometry: string | null;
   mapOrigin: string | null;
@@ -47,6 +53,7 @@ export function rowToJob(r: Record<string, unknown>): Job {
     hasMap: Boolean(r.map_geometry),
     driveMin: r.drive_min === null || r.drive_min === undefined ? null : Number(r.drive_min),
     driveMi: r.drive_mi === null || r.drive_mi === undefined ? null : Number(r.drive_mi),
+    area: (r.map_cluster as Area | null) ?? null,
     mapGeometry: (r.map_geometry as string | null) ?? null,
     mapOrigin: (r.map_origin as string | null) ?? null,
   };
@@ -60,6 +67,7 @@ export const JOB_COLUMNS = `id, employer, title, location, url, status, status_r
               posted::text AS posted, first_seen, last_seen, status_changed_at,
               (SELECT m.drive_min  FROM job_maps m WHERE m.id = jobs.id) AS drive_min,
               (SELECT m.drive_mi   FROM job_maps m WHERE m.id = jobs.id) AS drive_mi,
+              (SELECT m.cluster    FROM job_maps m WHERE m.id = jobs.id) AS map_cluster,
               (SELECT m.geometry   FROM job_maps m WHERE m.id = jobs.id) AS map_geometry,
               (SELECT m.origin_label FROM job_maps m WHERE m.id = jobs.id) AS map_origin`;
 
@@ -122,10 +130,13 @@ export async function ensureSchema(): Promise<void> {
           geometry     TEXT,
           drive_min    INTEGER,
           drive_mi     NUMERIC(6,1),
+          cluster      TEXT,
           origin_label TEXT,
           generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // Which of the two clusters the posting belongs to (added when the board split in two).
+      await pool().query(`ALTER TABLE job_maps ADD COLUMN IF NOT EXISTS cluster TEXT;`);
       // The first cut stored a rendered PNG instead; that shape is not compatible and the rows
       // carried nothing worth keeping, so swap the column out rather than leave a dead one.
       const legacy = await pool().query(

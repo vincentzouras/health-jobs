@@ -20,6 +20,7 @@ import {
   Typography,
 } from '@mui/material';
 import type { Job, Status } from '@/lib/db';
+import { AREA_LABEL, type Area } from '@/lib/areas';
 import { employerColor, type EmployerColor } from './employerColor';
 import RouteMap from './RouteMap';
 
@@ -30,6 +31,8 @@ interface ApiPayload {
     lastIngest: string | null;
     scannerVersion: string | null;
     mapOrigin: string | null;
+    /** Rows that fell outside the 50 minute boundary and are hidden. */
+    retired: number;
     db: boolean;
   };
   error?: string;
@@ -121,23 +124,18 @@ function driveColor(min: number | null): 'success' | 'warning' | 'error' | 'defa
  * The route card for one job: the drive from the pinned origin, drawn in the browser from the
  * polyline the Pi resolved at ingest. No map API is called when the board is viewed.
  */
-function RouteCard({
-  job,
-  origin,
-}: {
-  job: Job;
-  origin: string | null;
-}) {
+function RouteCard({ job }: { job: Job }) {
   const [open, setOpen] = useState(false);
   if (!job.hasMap || !job.mapGeometry) return null;
 
   const drive = fmtDrive(job.driveMin);
   const miles = job.driveMi === null ? '' : `${Math.round(job.driveMi)} mi`;
-  const from = origin ?? job.mapOrigin;
-  const fromLabel = from ? `from ${from}` : 'from the start point';
+  // The cluster name, not the pin: "from York", never "from Country Club of York".
+  const from = job.mapOrigin ?? (job.area ? AREA_LABEL[job.area] : null);
+  const fromLabel = from ? `from ${from}` : 'from the nearest hub';
   const destination = job.location ?? job.title;
   const googleMaps = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-    from ?? '',
+    from ? `${from}, PA` : '',
   )}&destination=${encodeURIComponent(destination)}&travelmode=driving`;
 
   return (
@@ -229,6 +227,14 @@ function EmployerChip({ employer, color }: { employer: string; color: EmployerCo
   );
 }
 
+/**
+ * Which cluster the posting belongs to. Deliberately quiet - the employer chip already carries
+ * colour - but it is also the label on the map, so it sits right next to it.
+ */
+function AreaChip({ area }: { area: Area }) {
+  return <Chip size="small" variant="outlined" label={AREA_LABEL[area]} />;
+}
+
 /** Note box: opened by "Not for me" on a live job and by "Add/Edit note" in the archive. */
 function ReasonComposer({
   id,
@@ -299,6 +305,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [data, setData] = useState<ApiPayload>(initial);
   const [query, setQuery] = useState('');
   const [employer, setEmployer] = useState('all');
+  const [area, setArea] = useState<'all' | Area>('all');
   const [sort, setSort] = useState<'posted' | 'found' | 'employer' | 'title'>('posted');
   const [showArchive, setShowArchive] = useState(false);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
@@ -419,6 +426,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
     const q = query.trim().toLowerCase();
     let rows = data.active.filter((j) => {
       if (employer !== 'all' && j.employer !== employer) return false;
+      if (area !== 'all' && j.area !== area) return false;
       if (!q) return true;
       return (
         j.title.toLowerCase().includes(q) ||
@@ -468,7 +476,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             Population Health Jobs
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Downingtown / Wilmington / York
+            Within a 50 minute drive of York or West Chester
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Scans for new jobs every morning
@@ -476,6 +484,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
           <Typography variant="body2" color="text.secondary">
             Last checked {rel(data.meta.lastIngest)}
             {data.meta.scannerVersion && ` · scanner ${data.meta.scannerVersion}`}
+            {data.meta.retired > 0 && ` · ${data.meta.retired} dropped as out of range`}
           </Typography>
         </Stack>
 
@@ -538,6 +547,18 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
           <TextField
             select
             size="small"
+            label="Area"
+            value={area}
+            onChange={(e) => setArea(e.target.value as 'all' | Area)}
+            sx={{ minWidth: 150 }}
+          >
+            <MenuItem value="all">Both areas</MenuItem>
+            <MenuItem value="york">{AREA_LABEL.york}</MenuItem>
+            <MenuItem value="west_chester">{AREA_LABEL.west_chester}</MenuItem>
+          </TextField>
+          <TextField
+            select
+            size="small"
             label="Sort by"
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
@@ -582,6 +603,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                       </Typography>
                       <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                         <EmployerChip employer={job.employer} color={colorFor(job.employer)} />
+                        {job.area && <AreaChip area={job.area} />}
                         <Typography variant="body2" color="text.secondary">
                           {metaLine(job, rel)}
                         </Typography>
@@ -595,7 +617,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                           />
                         )}
                       </Stack>
-                      <RouteCard job={job} origin={data.meta.mapOrigin} />
+                      <RouteCard job={job} />
                     </Box>
                     <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
                       <Button
@@ -673,6 +695,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                           </Typography>
                           <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                             <EmployerChip employer={job.employer} color={colorFor(job.employer)} />
+                            {job.area && <AreaChip area={job.area} />}
                             <Chip
                               size="small"
                               variant="outlined"
@@ -688,7 +711,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                               “{job.statusReason}”
                             </Typography>
                           )}
-                          <RouteCard job={job} origin={data.meta.mapOrigin} />
+                          <RouteCard job={job} />
                         </Box>
                         <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
                           <Button size="small" disabled={!!busy[job.id]} onClick={() => void setStatus(job.id, 'new')}>

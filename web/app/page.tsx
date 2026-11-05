@@ -5,7 +5,11 @@ export const dynamic = 'force-dynamic';
 
 async function load() {
   if (!hasDb()) {
-    return { active: [], archive: [], meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, db: false } };
+    return {
+      active: [],
+      archive: [],
+      meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0, db: false },
+    };
   }
   try {
     await ensureSchema();
@@ -24,11 +28,12 @@ async function load() {
     const metaMap = Object.fromEntries(meta.rows.map((r) => [String(r.key), r.value as string]));
     return {
       active: jobs.filter((j) => j.status === 'new'),
-      archive: jobs.filter((j) => j.status !== 'new'),
+      archive: jobs.filter((j) => j.status === 'applied' || j.status === 'ignored'),
       meta: {
         lastIngest: metaMap.last_ingest ?? null,
         scannerVersion: metaMap.scanner_version ?? null,
         mapOrigin: (origin.rows[0]?.origin_label as string) ?? null,
+        retired: jobs.filter((j) => j.status === 'retired').length,
         db: true,
       },
     };
@@ -36,7 +41,7 @@ async function load() {
     return {
       active: [],
       archive: [],
-      meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, db: true },
+      meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0, db: true },
       error: String(err).slice(0, 300),
     };
   }

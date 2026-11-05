@@ -68,18 +68,33 @@ WEB_URL = os.environ.get("JOB_BOARD_URL", "https://pop-health-jobs.vercel.app").
 WEB_TOKEN = os.environ.get("JOB_BOARD_TOKEN", "")
 
 # --------------------------------------------------------------------------
-# Route cards: one map image + drive time per job, rendered ONCE here and stored by the
-# dashboard, so viewing the board costs no routing or map API calls at all.
+# Two job clusters, each a ~50 minute drive. The map for a posting starts from whichever of
+# these two points is nearer, and the card shows the cluster name ("York" / "West Chester")
+# rather than the pin: a golf club address is not how she thinks about York, and Marshallton
+# is simply the point that stands in for the West Chester cluster.
 #
-# The origin is pinned rather than geocoded on every run: every drive time stays comparable,
-# and `--check-origin` re-geocodes the address to catch a stale pin.
+# Both are pinned rather than geocoded on every run so drive times stay comparable;
+# `--check-origin` re-geocodes each address to catch a stale pin.
 # --------------------------------------------------------------------------
-ORIGIN = {
-    "label": "Country Club of York",
-    "address": "1400 Country Club Rd, York, PA 17403",
-    "lat": 39.9276,
-    "lon": -76.7452,
+ORIGINS = {
+    "york": {
+        "label": "York",
+        "address": "1400 Country Club Rd, York, PA 17403",
+        "lat": 39.9276,
+        "lon": -76.7452,
+    },
+    "west_chester": {
+        "label": "West Chester",
+        # "Marshallton, PA" alone geocodes to Schuylkill County, so pin the West Bradford one.
+        "address": "Marshallton, West Bradford, PA",
+        "lat": 39.9487,
+        "lon": -75.6972,
+    },
 }
+
+# The whole point of the board: nothing further than this from one of the two clusters.
+# Applies to the calibrated minutes, i.e. the number shown on the card.
+CLUSTER_MAX_MINUTES = 50
 ORS_KEY = os.environ.get("ORS_KEY", "") or os.environ.get("OPENROUTESERVICE_KEY", "")
 
 # Locations like "Southeastern PA" are source defaults, not real places.
@@ -153,13 +168,17 @@ def scanner_version() -> str:
         return "unknown"
 
 
-def push_snapshot(relevant_jobs: dict, run_at: str) -> str:
+def push_snapshot(relevant_jobs: dict, run_at: str, full: bool = True) -> str:
     """Send the run's relevant postings to the Vercel dashboard. Never fatal."""
     if not WEB_URL or not WEB_TOKEN:
         return "skipped (JOB_BOARD_URL / JOB_BOARD_TOKEN not set)"
     payload = {
         "run_at": run_at,
         "scanner": scanner_version(),
+        # "This is the whole board": anything the dashboard still lists as new but that is
+        # absent here has fallen outside the two clusters and gets retired rather than left
+        # sitting there forever.
+        "full": bool(full),
         "jobs": [
             {
                 "employer": j["employer"],
@@ -172,12 +191,13 @@ def push_snapshot(relevant_jobs: dict, run_at: str) -> str:
             for j in relevant_jobs.values()
         ],
     }
-    if not payload["jobs"]:
+    if not payload["jobs"] and not full:
         return "skipped (nothing relevant this run)"
     try:
         res = _http_json("POST", WEB_URL + "/api/ingest", payload,
                          {"x-ingest-token": WEB_TOKEN}, timeout=45)
-        return "ok (%s new, %s updated)" % (res.get("inserted"), res.get("updated"))
+        return "ok (%s new, %s updated, %s retired)" % (
+            res.get("inserted"), res.get("updated"), res.get("retired"))
     except Exception as e:
         return "FAILED: %s" % str(e)[:120]
 
@@ -310,13 +330,11 @@ URL_REJECT = re.compile(
 
 
 def classify(title: str, location: str = "", url: str = "", derived: bool = False) -> tuple[bool, str]:
-    """Return (is_relevant, reason). Deterministic - this is the whole filter.
+    """Return (is_relevant, reason). Deterministic - this is the whole *role* filter.
 
-    `derived` marks a location read off the posting itself rather than off a result card.
-    Those are real towns ("Westtown, PA") that the hand-curated city list will never fully
-    cover, so for them the test is "PA/DE and not known to be out of area" instead of
-    "in the allow-list" - the employer's footprint already bounds the risk, and a wrong
-    city is visible on the card with its own Delete/not-applicable path.
+    Geography is deliberately not decided here: distance is the rule (see `in_range`), and it
+    needs a route, so the run applies it separately. This only answers "is this the kind of job
+    she wants" and "can we trust the location enough to route it".
     """
     t = (title or "").strip()
     if len(t) < 4:
@@ -331,17 +349,15 @@ def classify(title: str, location: str = "", url: str = "", derived: bool = Fals
     # Normalise trailing country noise ("Philadelphia, PA, United States") before checks.
     loc = re.sub(r",?\s*United States\s*$", "", loc, flags=re.I).strip(" ,")
     if not loc:
-        # Unknown geography means we cannot promise it is in one of her corridors.
-        # Better to drop it than to alert her about a job in another state.
+        # Without a place it cannot be routed, so it cannot be shown to be in range.
         return False, "unknown location"
-    if BAD_LOCATION.search(loc):
-        return False, "outside corridor"
-    if FAR_DE.search(loc):
-        return False, "beyond Wilmington (Kent/Sussex DE)"
-    if not _city_in_corridor(loc):
-        if derived and re.search(r",\s*(?:PA|Pennsylvania|DE|Delaware)$", loc, re.I):
-            return True, "ok (city from posting)"
-        return False, "not an allowed city"
+    if not geocodable(normalize_location(loc)):
+        # A regional stand-in ("Southeastern PA") from a result card is only a placeholder: the
+        # detail screen replaces it with the real city before distance is judged. Once it *has*
+        # come from the posting and is still a region, there is nothing to route to.
+        if derived:
+            return False, "location is a region, not a city"
+        return True, "ok (city from detail page)"
     return True, "ok"
 
 
@@ -1282,6 +1298,81 @@ def collect(prev_health=None):
     return found, errors
 
 
+def _boundary_selftest() -> int:
+    """Exercise the 50 minute rule with the network stubbed out, so it is the logic under test.
+
+    Returns the number of failures. Runs both cluster pins, the boundary itself, and the case
+    where the nearer pin is over the line but the other is not.
+    """
+    global geocode, snap_point, route_summary
+    saved = (geocode, snap_point, route_summary)
+    # The minutes are the real measured values (calibrated) for these pairs.
+    places = {
+        "Lancaster, PA": (40.0381, -76.3041),
+        "West Chester, PA": (39.9595, -75.6061),
+        "Philadelphia, PA": (39.9907, -75.1683),
+        "Wilmington, DE": (39.7325, -75.5175),
+    }
+    drives = {
+        ("york", 40.04, -76.30): 43, ("west_chester", 40.04, -76.30): 54,
+        ("york", 39.96, -75.61): 90, ("west_chester", 39.96, -75.61): 9,
+        ("york", 39.99, -75.17): 113, ("west_chester", 39.99, -75.17): 60,
+        ("york", 39.73, -75.52): 100, ("west_chester", 39.73, -75.52): 36,
+    }
+
+    def fake_geocode(loc):
+        return places.get(normalize_location(loc))
+
+    def fake_route(cluster, lat, lon):
+        mins = drives.get((cluster, round(lat, 2), round(lon, 2)))
+        if not mins:
+            return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
+        # Roads are never shorter than the straight line, and _route_too_short enforces it.
+        straight = _straight_miles(ORIGINS[cluster]["lat"], ORIGINS[cluster]["lon"], lat, lon)
+        return {"minutes": mins, "raw_minutes": mins * 1.22,
+                "miles": round(straight * 1.2, 1), "geometry": "abc"}
+
+    geocode = fake_geocode
+    snap_point = lambda lat, lon: (lat, lon)
+    route_summary = fake_route
+    fails = 0
+    try:
+        cases = [
+            ("Lancaster, PA", "york", 43, True),
+            ("West Chester, PA", "west_chester", 9, True),
+            ("Wilmington, DE", "west_chester", 36, True),
+            # 60 min from the nearer pin and worse from the other: dropped either way.
+            ("Philadelphia, PA", "west_chester", 60, False),
+            ("Southeastern PA", None, None, False),
+        ]
+        for loc, want_cluster, want_min, want_range in cases:
+            place = resolve_route(normalize_location(loc), {"geo": {}, "routes": {}})
+            got = (place.get("cluster"), place.get("min"), in_range(place))
+            ok = got == (want_cluster, want_min, want_range)
+            if not ok:
+                fails += 1
+            print("%-6s %-20s -> cluster=%-12s %4s min  in range=%s"
+                  % ("PASS" if ok else "FAIL", loc, got[0], got[1], got[2]))
+        # The nearer pin can be over the line while the other is inside it.
+        drives[("york", 39.96, -75.61)] = 58
+        place = resolve_route("West Chester, PA", {"geo": {}, "routes": {}})
+        ok = place.get("cluster") == "west_chester" and in_range(place)
+        if not ok:
+            fails += 1
+        print("%-6s %-20s -> %s (%s min)" % ("PASS" if ok else "FAIL", "fallback pin",
+                                             place.get("cluster"), place.get("min")))
+        for name, ok in [("at the limit", in_range({"cluster": "york",
+                                                    "min": CLUSTER_MAX_MINUTES}) is True),
+                         ("one over", in_range({"cluster": "york",
+                                                "min": CLUSTER_MAX_MINUTES + 1}) is False),
+                         ("no cluster", in_range({"min": 10}) is False)]:
+            if not ok:
+                fails += 1
+            print("%-6s %-20s -> %s" % ("PASS" if ok else "FAIL", name, ok))
+    finally:
+        geocode, snap_point, route_summary = saved
+    return fails
+
 def selftest() -> int:
     corpus = [
         ("Care Coordinator", "Bala Cynwyd, PA", True),
@@ -1309,9 +1400,6 @@ def selftest() -> int:
         ("Case Manager Nurse", "Ephrata, PA", False),
         ("Director of Population Health", "Philadelphia, PA", False),
         ("Population Health Intern", "Philadelphia, PA", False),
-        ("Care Coordinator", "Pittsburgh, PA", False),
-        ("Care Coordinator", "Princeton, NJ", False),
-        ("Care Coordinator", "Camden, NJ", False),
         ("Cook", "York, PA", False),
         # Seniority: not hired into these straight out of a BS
         ("Lead Case Manager", "Philadelphia, PA", False),
@@ -1319,15 +1407,7 @@ def selftest() -> int:
         ("Senior Care Coordinator", "West Chester, PA", False),
         ("Sr. Care Coordinator", "Exton, PA", False),
         ("Principal Program Coordinator", "Media, PA", False),
-        # Kent/Sussex DE is past Wilmington, not on the commute to it
-        ("Care Manager II", "Dover, Delaware", False),
-        ("Care Coordinator", "Smyrna, DE", False),
-        ("Community Health Worker", "Milford, Delaware", False),
         # Regression: substring matching used to let these through
-        ("Community Health Navigator", "Washington, District Of Columbia", False),
-        ("Community Health Worker", "Dorchester, Massachusetts", False),
-        ("Care Coordinator", "Columbia, SC", False),
-        ("Care Coordinator", "New York, NY", False),
         ("Community Health Worker", "United States", False),
         ("Care Coordinator", "", False),
         # URL-based licensed-role detection (title hides it, slug does not)
@@ -1360,9 +1440,12 @@ def selftest() -> int:
         ("911 Dispatcher", "West Chester, PA", False),
         ("Deputy Sheriff III (Sergeant)", "West Chester, PA", False),
         ("Grant Writer", "Southeastern PA", False),
-        # WellSpan is multi-site: Chambersburg/Waynesboro are Franklin County, well past York
-        ("Social Service Coordinator", "Chambersburg, PA", False),
-        ("Care Coordinator", "Waynesboro, PA", False),
+        # Geography is no longer decided here: these titles are fine roles and the run drops
+        # them by distance (see the boundary section below).
+        ("Social Service Coordinator", "Chambersburg, PA", True),
+        ("Care Coordinator", "Waynesboro, PA", True),
+        ("Care Coordinator", "Pittsburgh, PA", True),
+        ("Care Coordinator", "Princeton, NJ", True),
         ("Care Coordinator", "York, PA", True),
         ("Care Coordinator", "Gettysburg, PA", True),
         ("Care Coordinator", "Ephrata, PA", True),
@@ -1386,18 +1469,17 @@ def selftest() -> int:
                 fails += 1
         print("%-14s want=%-5s got=%-5s %-58s | %s" % (status, want, got, title[:58], reason))
 
-    # Cities read off the posting: allowed if PA/DE and not known-far, because the curated
-    # city list can never cover every township a health system posts in.
+    # Cities read off the posting: a real town is accepted whatever the curated list says,
+    # because distance decides later. A region read off the posting has nothing to route to.
     derived_cases = [
         ("Care Coordinator", "Westtown, PA", True),
         ("Social Services Aide III, CYF", "Westtown, PA", True),
         ("Care Coordinator", "Dillsburg, PA", True),
-        ("Care Coordinator", "Chambersburg, PA", False),
-        ("Care Coordinator", "Pittsburgh, PA", False),
-        ("Care Coordinator", "Princeton, NJ", False),
-        ("Care Coordinator", "Dover, DE", False),
-        # a source's synthetic default stays valid
-        ("Care Coordinator", "Southeastern PA", True),
+        ("Care Coordinator", "Chambersburg, PA", True),
+        ("Care Coordinator", "Pittsburgh, PA", True),
+        ("Care Coordinator", "Princeton, NJ", True),
+        ("Care Coordinator", "Dover, DE", True),
+        ("Care Coordinator", "Southeastern PA", False),
     ]
     print("\n--- derived city (from the posting) ---")
     dvfails = 0
@@ -1695,14 +1777,17 @@ def selftest() -> int:
             mfails += 1
         print("%-6s %-20s -> %r" % ("PASS" if ok else "FAIL", name, got))
 
+    print("\n--- distance boundary (%d min from either cluster) ---" % CLUSTER_MAX_MINUTES)
+    bfails = _boundary_selftest()
+
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
           "%d penn failures, %d posted failures, %d location failures, %d map failures, "
-          "%d cases total"
-          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails,
+          "%d boundary failures, %d cases total"
+          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
-             + len(dcases) + len(bcases) + len(lcases) + len(mcases)))
+             + len(dcases) + len(bcases) + len(lcases) + len(mcases) + 8))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
-                 and postfails == 0 and lfails == 0 and mfails == 0) else 1
+                 and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -1736,7 +1821,7 @@ def backfill_posted(st) -> int:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print("found dates for %d of %d" % (hits, len(todo)))
     if updates:
-        print("dashboard sync: %s" % push_snapshot(updates, now))
+        print("dashboard sync: %s" % push_snapshot(updates, now, full=False))
     return 0
 
 
@@ -1793,7 +1878,7 @@ def backfill_location(st) -> int:
         print("WARNING: %d detail page(s) returned no text - browser problem, not 'no city'"
               % empty)
     if updates:
-        print("dashboard sync: %s" % push_snapshot(updates, now))
+        print("dashboard sync: %s" % push_snapshot(updates, now, full=False))
     for emp, title, real in moved:
         print("OUT OF CORRIDOR: %s | %s | %s (purge this row on the board)" % (emp, title, real))
     return 0
@@ -1886,6 +1971,19 @@ _SUFFIX = {
 }
 
 
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _age_hours(stamp) -> float:
+    """Hours since an ISO-8601 stamp; 0 when it is missing or unreadable (so callers retry)."""
+    try:
+        then = datetime.strptime(str(stamp), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return 0.0
+    return (datetime.now(timezone.utc) - then).total_seconds() / 3600.0
+
+
 def _tokens(text) -> list:
     """Lower-case word/number tokens, so "Bala-Cynwyd", "Bala Cynwyd" and "Rd"/"Road" compare."""
     return [_SUFFIX.get(t, t) for t in re.findall(r"[a-z0-9]+", (text or "").lower())]
@@ -1955,14 +2053,29 @@ def snap_point(lat: float, lon: float) -> tuple:
     return lat, lon
 
 
-def route_summary(dest_lat: float, dest_lon: float) -> dict:
-    """Drive time and distance from the pinned origin, plus the route as an encoded polyline."""
+def _straight_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle-ish distance, accurate enough to sanity-check a route length."""
+    dlat = (lat2 - lat1) * 69.05
+    dlon = (lon2 - lon1) * 69.05 * math.cos(math.radians((lat1 + lat2) / 2.0))
+    return math.hypot(dlat, dlon)
+
+
+def nearest_cluster(lat: float, lon: float) -> str:
+    """Whichever cluster pin is closer in a straight line - the only cheap way to choose."""
+    return min(ORIGINS, key=lambda k: _straight_miles(
+        ORIGINS[k]["lat"], ORIGINS[k]["lon"], lat, lon))
+
+
+def route_summary(cluster: str, dest_lat: float, dest_lon: float) -> dict:
+    """Drive from one cluster pin to a destination, plus the route as an encoded polyline."""
+    origin = ORIGINS[cluster]
+    empty = {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
     if not ORS_KEY:
-        return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
+        return empty
     try:
         data = _ors_json(
             "POST", "https://api.openrouteservice.org/v2/directions/driving-car",
-            {"coordinates": [[ORIGIN["lon"], ORIGIN["lat"]], [dest_lon, dest_lat]],
+            {"coordinates": [[origin["lon"], origin["lat"]], [dest_lon, dest_lat]],
              "instructions": False},
             {"Authorization": ORS_KEY, "Accept": "application/json"})
         route = (data.get("routes") or [{}])[0]
@@ -1979,14 +2092,73 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
         }
     except Exception as e:
         MAP_ERROR["route"] = _err_text(e)
-        return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
+        return empty
 
 
-def _straight_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle-ish distance, accurate enough to sanity-check a route length."""
-    dlat = (lat2 - lat1) * 69.05
-    dlon = (lon2 - lon1) * 69.05 * math.cos(math.radians((lat1 + lat2) / 2.0))
-    return math.hypot(dlat, dlon)
+def resolve_route(loc, st: dict) -> dict:
+    """Route a normalized location from its cluster pin, caching the answer per location.
+
+    Every posting in a city shares one route, so this runs per distinct city (a dozen or so),
+    not per job. Returns a record with `cluster`, `minutes` and `geometry`, or `error`/`skipped`.
+    """
+    routes = st.setdefault("routes", {})
+    cached = routes.get(loc) or {}
+    if cached and (cached.get("at") or cached.get("error")):
+        # An error is retried once a day; a real answer is reused for good.
+        if cached.get("error") and _age_hours(cached.get("at")) > 24:
+            cached = {}
+        else:
+            return cached
+    if not loc or not geocodable(loc):
+        routes[loc] = {"skipped": "no city", "at": now_iso()}
+        return routes[loc]
+
+    geo = st.setdefault("geo", {})
+    coords = geo.get(loc)
+    if not coords:
+        coords = geocode(loc)
+        if not coords:
+            reason = MAP_ERROR["geocode"] or "not found"
+            routes[loc] = {"skipped": reason, "at": now_iso()}
+            return routes[loc]
+        coords = snap_point(coords[0], coords[1])
+        geo[loc] = list(coords)
+
+    cluster = nearest_cluster(coords[0], coords[1])
+    route = route_summary(cluster, coords[0], coords[1])
+    if not route["minutes"] or not route["geometry"]:
+        # A near-equidistant address can be over the line from its nearest pin but inside it
+        # from the other one, so try the second pin once before giving up.
+        other = [k for k in ORIGINS if k != cluster][0]
+        alt = route_summary(other, coords[0], coords[1])
+        if alt["minutes"] and alt["geometry"]:
+            cluster, route = other, alt
+        if not route["minutes"] or not route["geometry"]:
+            routes[loc] = {"error": MAP_ERROR["route"] or "directions failed", "at": now_iso()}
+            return routes[loc]
+    elif route["minutes"] > CLUSTER_MAX_MINUTES:
+        other = [k for k in ORIGINS if k != cluster][0]
+        alt = route_summary(other, coords[0], coords[1])
+        if alt["minutes"] and alt["minutes"] < route["minutes"]:
+            cluster, route = other, alt
+
+    straight = _straight_miles(
+        ORIGINS[cluster]["lat"], ORIGINS[cluster]["lon"], coords[0], coords[1])
+    if _route_too_short(route["miles"], straight):
+        routes[loc] = {"error": "%s mi route beats the %.0f mi straight line"
+                                % (route["miles"], straight), "at": now_iso()}
+        return routes[loc]
+
+    routes[loc] = {
+        "at": now_iso(),
+        "cluster": cluster,
+        "label": ORIGINS[cluster]["label"],
+        "min": route["minutes"],
+        "raw": route["raw_minutes"],
+        "mi": route["miles"],
+        "geometry": route["geometry"],
+    }
+    return routes[loc]
 
 
 def _route_too_short(route_miles, straight_miles) -> bool:
@@ -2004,155 +2176,148 @@ def _map_settled(rec: dict) -> bool:
     return bool(rec.get("skipped") or rec.get("at"))
 
 
-def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
-    """Render route cards for jobs that do not have one yet.
+def place_of(job: dict, st: dict) -> dict:
+    """The cluster verdict for one posting: which cluster, how far, or why it was dropped."""
+    return resolve_route(normalize_location(job.get("location")), st)
 
-    Never raises: a missing key, an unresolvable city or a service blip means that card has no
-    map, not that the run failed.
+
+def in_range(place: dict) -> bool:
+    """Inside the 50 minute boundary of one of the two clusters - the only geography rule."""
+    return bool(place.get("cluster")) and (place.get("min") or 10 ** 6) <= CLUSTER_MAX_MINUTES
+
+
+def _place_reason(place: dict) -> str:
+    """How to say why a posting is not on the board, for --dump and the run log."""
+    if place.get("min"):
+        return "distance: %d min from %s" % (place["min"], place.get("label") or "?")
+    return "distance: %s" % (place.get("error") or place.get("skipped") or "unresolved")
+
+
+def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict, dict]:
+    """Turn already-resolved places into route cards, and say what got dropped.
+
+    No routing happens here: `resolve_route` has done it once per city. Returns the cards to
+    push, the minutes per job (for the Telegram alert) and a tally of why the rest went.
     """
     if not has_map_keys():
-        return [], {}
+        return [], {}, {"unresolved": len(jobs)}
     done = st.setdefault("maps_done", {})
-    geo = st.setdefault("geo", {})
-    out, drive = [], {}
-    provider_fails = 0
+    out, drive, dropped = [], {}, {}
     for key, job in jobs.items():
-        rec = done.get(key) or {}
-        if _map_settled(rec):
+        place = place_of(job, st)
+        if not place.get("cluster"):
+            reason = ("out of range" if place.get("min") else "unresolved")
+            dropped[reason] = dropped.get(reason, 0) + 1
             continue
-        loc = normalize_location(job.get("location"))
-        if not geocodable(loc):
-            # "Southeastern PA" and friends cannot be geocoded. Nothing is recorded, so a card
-            # that becomes routable later (a better location) is picked up on the next run.
+        if not in_range(place):
+            dropped["out of range"] = dropped.get("out of range", 0) + 1
             continue
-        try:
-            coords = geo.get(loc)
-            if not coords:
-                coords = geocode(loc)
-                if not coords:
-                    if MAP_ERROR["geocode"]:
-                        # The provider refused us, so this says nothing about the city.
-                        raise RuntimeError(MAP_ERROR["geocode"])
-                    done[key] = {"skipped": "not found", "loc": loc}
-                    continue
-                coords = snap_point(coords[0], coords[1])
-                geo[loc] = list(coords)
-            route = route_summary(coords[0], coords[1])
-            if not route["minutes"] or not route["geometry"]:
-                raise RuntimeError(MAP_ERROR["route"] or "directions returned no %s"
-                                   % ("duration" if not route["minutes"] else "geometry"))
-            straight = _straight_miles(ORIGIN["lat"], ORIGIN["lon"], coords[0], coords[1])
-            if _route_too_short(route["miles"], straight):
-                raise RuntimeError("%s mi route beats the %.0f mi straight line to %s"
-                                   % (route["miles"], straight, loc))
-            out.append({
-                "employer": job["employer"],
-                "job_id": str(job["id"]),
-                "drive_min": route["minutes"],
-                "drive_mi": route["miles"],
-                "origin_label": ORIGIN["label"],
-                # Encoded polyline (precision 5): the dashboard decodes it and draws the line
-                # over OpenStreetMap tiles, so nothing is rendered or stored as an image.
-                "geometry": route["geometry"],
-            })
-            drive[key] = route["minutes"]
-            done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"],
-                         "raw": route["raw_minutes"]}
-        except Exception as e:
-            msg = _err_text(e)[:160]
-            code = int(m.group(1)) if (m := re.match(r"HTTP (\d{3})", msg)) else 0
-            if code in (401, 403, 429) or code >= 500 or code == 0:
-                # The key or the service, not this posting: try again next run and stop early
-                # rather than paying for a call per job.
-                provider_fails += 1
-                done[key] = {"err": msg, "loc": loc}
-                print("maps: %-34s %s" % (loc[:34], msg[:80]))
-                if provider_fails >= 3:
-                    print("maps: stopping this run after %d provider failure(s)" % provider_fails)
-                    break
-                time.sleep(1.0)
-            else:
-                # This one address will not route (no road near the geocoded point). Leave it
-                # unsettled so a better location or a data fix picks it up on a later run.
-                done[key] = {"err": msg, "loc": loc}
-                print("maps: %-34s unroutable (%s)" % (loc[:34], msg[:70]))
-    return out, drive
+        if _map_settled(done.get(key) or {}) and (done[key].get("cluster") == place["cluster"]):
+            drive[key] = place["min"]
+            continue
+        out.append({
+            "employer": job["employer"],
+            "job_id": str(job["id"]),
+            "drive_min": place["min"],
+            "drive_mi": place["mi"],
+            "cluster": place["cluster"],
+            "origin_label": place["label"],
+            # Encoded polyline (precision 5): the dashboard decodes it and draws the line over
+            # OpenStreetMap tiles, so nothing is rendered or stored as an image.
+            "geometry": place["geometry"],
+        })
+        drive[key] = place["min"]
+        done[key] = {"at": now, "min": place["min"], "mi": place["mi"],
+                     "raw": place.get("raw"), "cluster": place["cluster"]}
+    return out, drive, dropped
 
 
 def check_origin() -> int:
-    """Re-geocode the pinned origin address and report how far the pin has drifted."""
+    """Re-geocode each pinned cluster point and report how far each pin has drifted."""
     if not has_map_keys():
         print("needs ORS_KEY in ~/.hermes/.env")
         return 1
-    got = geocode(ORIGIN["address"])
-    if not got:
-        print("could not geocode %r" % ORIGIN["address"])
-        return 1
-    lat, lon = got
-    dlat = (lat - ORIGIN["lat"]) * 111_320
-    dlon = (lon - ORIGIN["lon"]) * 111_320 * math.cos(math.radians(ORIGIN["lat"]))
-    metres = math.hypot(dlat, dlon)
-    print("pinned  %.5f, %.5f" % (ORIGIN["lat"], ORIGIN["lon"]))
-    print("geocode %.5f, %.5f  (%s)" % (lat, lon, ORIGIN["address"]))
-    print("drift   %.0f m" % metres)
-    return 0 if metres < 500 else 1
+    rc = 0
+    for key, origin in ORIGINS.items():
+        got = geocode(origin["address"])
+        if not got:
+            print("%-13s could not geocode %r" % (key, origin["address"]))
+            rc = 1
+            continue
+        lat, lon = got
+        dlat = (lat - origin["lat"]) * 111_320
+        dlon = (lon - origin["lon"]) * 111_320 * math.cos(math.radians(origin["lat"]))
+        metres = math.hypot(dlat, dlon)
+        print("%-13s pinned %.5f, %.5f | geocode %.5f, %.5f | drift %.0f m  (%s)"
+              % (key, origin["lat"], origin["lon"], lat, lon, metres, origin["address"]))
+        if metres >= 500:
+            rc = 1
+    return rc
 
 
 def check_maps() -> int:
-    """Prove the map key works end to end without touching the board or state."""
+    """Prove the map key and both cluster pins work, without touching the board or state."""
     if not has_map_keys():
         print("missing in ~/.hermes/.env: ORS_KEY")
         print("route cards stay off until it is set - nothing else is affected")
         return 1
     rc = 0
-    print("provider         openrouteservice (geocode + directions)")
-    origin = geocode(ORIGIN["address"])
-    print("geocode origin   %s -> %s" % (ORIGIN["address"], origin))
-    if not origin:
-        print("  FAILED: cannot resolve the pinned start address")
+    print("provider         openrouteservice (geocode + directions), x%g calibration"
+          % DRIVE_CALIBRATION)
+    print("boundary         %d min from either cluster pin" % CLUSTER_MAX_MINUTES)
+    sample = geocode("Lancaster, PA")
+    print("geocode sample   Lancaster, PA -> %s" % (sample,))
+    if not sample:
+        print("  FAILED: cannot resolve a sample city")
         if MAP_ERROR["geocode"]:
             print("  reason: %s" % MAP_ERROR["geocode"])
         return 1
-    dest = geocode("West Chester, PA")
-    print("geocode sample   West Chester, PA -> %s" % (dest,))
-    if not dest:
-        print("  FAILED: cannot resolve a corridor city")
-        if MAP_ERROR["geocode"]:
-            print("  reason: %s" % MAP_ERROR["geocode"])
-        return 1
-    snapped = snap_point(dest[0], dest[1])
-    print("snap to road     %s -> %s" % (dest, snapped))
-    route = route_summary(snapped[0], snapped[1])
-    print("route            %s min / %s mi (geometry %d chars)"
-          % (route["minutes"], route["miles"], len(route.get("geometry") or "")))
-    print("router raw       %s min, corrected by x%g for the OSM speed model"
-          % (route["raw_minutes"], DRIVE_CALIBRATION))
-    if not route["minutes"]:
-        print("  FAILED: directions returned no duration")
-        if MAP_ERROR["route"]:
-            print("  reason: %s" % MAP_ERROR["route"])
-        rc = 1
-    if not route["geometry"]:
-        print("  FAILED: directions returned no route geometry, so nothing can be drawn")
+    snapped = snap_point(sample[0], sample[1])
+    for key, origin in ORIGINS.items():
+        route = route_summary(key, snapped[0], snapped[1])
+        inside = (route["minutes"] or 10 ** 6) <= CLUSTER_MAX_MINUTES
+        print("route %-13s %s min / %s mi -> %s (straight %s)"
+              % (key, route["minutes"], route["miles"],
+                 "in range" if inside else "outside",
+                 origin["label"]))
+        if not route["minutes"] or not route["geometry"]:
+            print("  FAILED: no duration/geometry from %s" % key)
+            if MAP_ERROR["route"]:
+                print("  reason: %s" % MAP_ERROR["route"])
+            rc = 1
+    picked = resolve_route("Lancaster, PA", {"geo": {}, "routes": {}})
+    print("resolve_route    Lancaster, PA -> %s cluster, %s min (expected York)"
+          % (picked.get("cluster"), picked.get("min")))
+    if picked.get("cluster") != "york" or not in_range(picked):
+        print("  FAILED: Lancaster should belong to York and be inside the boundary")
         rc = 1
     print("OK" if rc == 0 else "see failures above")
     return rc
 
 
 def backfill_maps(st, relevant: dict) -> int:
-    """Render route cards for every relevant job that does not have one yet."""
+    """Re-resolve and re-push route cards for the whole board, without re-scraping.
+
+    Also the switch-over path: it re-applies the 50 minute boundary and the cluster labels to
+    postings that were pushed before either existed.
+    """
     if not has_map_keys():
         print("needs ORS_KEY in ~/.hermes/.env - nothing to do")
         return 1
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    finished = st.get("maps_done", {})
-    todo = {k: v for k, v in relevant.items() if not _map_settled(finished.get(k) or {})}
-    print("maps: %d of %d relevant postings need a route card" % (len(todo), len(relevant)))
-    maps, drive = build_maps(todo, st, now)
+    now = now_iso()
+    todo = {k: v for k, v in relevant.items() if not _map_settled(st.get("maps_done", {}).get(k) or {})}
+    print("maps: %d of %d known postings need resolving" % (len(todo), len(relevant)))
+    maps, _drive, dropped = build_maps(todo, st, now)
     save_state(st)
-    print("rendered %d map(s); %d without one" % (len(maps), len(todo) - len(maps)))
+    print("route cards: %d to push, %d dropped (%s)"
+          % (len(maps), sum(dropped.values()),
+             ", ".join("%s %d" % kv for kv in sorted(dropped.items())) or "none"))
     if maps:
         print("dashboard sync: %s" % push_maps(maps, now))
+    in_range_jobs = {k: v for k, v in relevant.items() if in_range(place_of(v, st))}
+    print("board: %d of %d postings inside %d min of a cluster; syncing snapshot"
+          % (len(in_range_jobs), len(relevant), CLUSTER_MAX_MINUTES))
+    print("dashboard sync: %s" % push_snapshot(in_range_jobs, now, full=True))
     return 0
 
 
@@ -2224,6 +2389,16 @@ def main() -> int:
         (relevant if ok else rejected)[key] = dict(job, reason=reason)
 
     seen = st.get("seen", {})
+    # Geography, and it is the whole of the geography rule: route each candidate city once from
+    # its nearer cluster pin (results are cached per city), then keep only what is inside
+    # CLUSTER_MAX_MINUTES. Anything further is dropped no matter how good the role is.
+    places = {}
+    for key in list(relevant):
+        place = place_of(relevant[key], st)
+        places[key] = place
+        if not in_range(place):
+            rejected[key] = dict(relevant.pop(key), reason=_place_reason(place))
+
     # A posting that is relevant now but was never *announced* should still alert, even if
     # we recorded it earlier (seen holds every posting, relevant or not, so a title or
     # location edit upstream could otherwise leave it permanently suppressed).
@@ -2237,9 +2412,11 @@ def main() -> int:
     if "--dump" in args:
         print("=== RELEVANT (%d) ===" % len(relevant))
         for k, j in sorted(relevant.items(), key=lambda kv: kv[1]["title"]):
-            print("  [%s] %-55s | %-24s | %-10s | %s" % (
-                j["employer"][:14], j["title"][:55], j["location"][:24],
-                j.get("posted") or "?", j["url"][:70]))
+            place = places.get(k) or {}
+            print("  [%s] %-50s | %-22s | %-5s %3s min | %s" % (
+                j["employer"][:14], j["title"][:50], j["location"][:22],
+                (place.get("label") or "?")[:5], place.get("min"),
+                j.get("posted") or "?"))
         print("\n=== NEW since last run (%d) ===" % len(new_keys))
         for k in new_keys:
             print("  NEW:", relevant[k]["title"], "|", relevant[k]["employer"])
@@ -2296,6 +2473,13 @@ def main() -> int:
                 # Persist, or the next run re-derives the guess from the card and overwrites it.
                 st.setdefault("locations", {})[k] = real
                 ok, why = classify(job["title"], real, job.get("url", ""), derived=True)
+                if ok:
+                    # The real city can be a county away from the guessed one, so the drive
+                    # decision has to be made again on it.
+                    place = place_of(job, st)
+                    places[k] = place
+                    if not in_range(place):
+                        ok, why = False, _place_reason(place)
                 if not ok:
                     dropped.append((k, "real location %s (%s)" % (real, why)))
                     st["seen"].setdefault(k, {})["location_rejected"] = real
@@ -2325,7 +2509,7 @@ def main() -> int:
         st["seen"] = seen
         st["baseline_done"] = True
         st["baseline_at"] = now
-        st["web_sync"] = push_snapshot(relevant, now)
+        st["web_sync"] = push_snapshot(relevant, now, full=False)
         save_state(st)
         if "--baseline" in args:
             print("baseline recorded: %d postings (%d relevant) at %s"
@@ -2335,7 +2519,8 @@ def main() -> int:
                 print("  ⚠️", w)
         return 0
 
-    st["web_sync"] = push_snapshot(relevant, now)
+    # `full` only when every source answered: a partial scrape must not retire the whole board.
+    st["web_sync"] = push_snapshot(relevant, now, full=not errors)
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
@@ -2361,7 +2546,8 @@ def main() -> int:
         if j["location"]:
             lines.append("   📍 %s" % j["location"])
         if drive_min.get(k):
-            lines.append("   🚗 %d min from %s" % (drive_min[k], ORIGIN["label"]))
+            place = places.get(k) or {}
+            lines.append("   🚗 %d min from %s" % (drive_min[k], place.get("label") or "?"))
         lines.append("   🔗 %s\n" % j["url"])
     if len(new_keys) > 10:
         lines.append("…and %d more (run with --dump for the full list)" % (len(new_keys) - 10))
