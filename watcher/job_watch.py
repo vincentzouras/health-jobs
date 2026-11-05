@@ -1775,6 +1775,27 @@ def _err_text(e) -> str:
     return " ".join(str(e).split())[:200]
 
 
+# The free openrouteservice plan allows 40 requests a minute, and a backfill of the whole board
+# fires two per posting; without this it throttles and the cards silently come back empty.
+ORS_MIN_INTERVAL = 1.5
+_last_ors_call = [0.0]
+
+
+def _ors_json(method: str, url: str, body=None, headers=None):
+    for attempt in range(3):
+        gap = time.time() - _last_ors_call[0]
+        if gap < ORS_MIN_INTERVAL:
+            time.sleep(ORS_MIN_INTERVAL - gap)
+        _last_ors_call[0] = time.time()
+        try:
+            return _http_json(method, url, body, headers, timeout=30)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 403) and attempt < 2:
+                time.sleep(20 * (attempt + 1))
+                continue
+            raise
+
+
 def geocode(location: str):
     """"City, ST" -> (lat, lon) via openrouteservice. None when it cannot resolve."""
     if not ORS_KEY:
@@ -1783,8 +1804,8 @@ def geocode(location: str):
         q = urllib.parse.urlencode({
             "api_key": ORS_KEY, "text": location, "size": 1, "boundary.country": "USA",
         })
-        got = _geojson_point(_http_json(
-            "GET", "https://api.openrouteservice.org/geocode/search?" + q, timeout=25))
+        got = _geojson_point(_ors_json(
+            "GET", "https://api.openrouteservice.org/geocode/search?" + q))
         if got:
             return got
     except Exception as e:
@@ -1797,11 +1818,11 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
     if not ORS_KEY:
         return {"minutes": None, "miles": None, "geometry": ""}
     try:
-        data = _http_json(
+        data = _ors_json(
             "POST", "https://api.openrouteservice.org/v2/directions/driving-car",
             {"coordinates": [[ORIGIN["lon"], ORIGIN["lat"]], [dest_lon, dest_lat]],
              "instructions": False},
-            {"Authorization": ORS_KEY, "Accept": "application/json"}, timeout=30)
+            {"Authorization": ORS_KEY, "Accept": "application/json"})
         route = (data.get("routes") or [{}])[0]
         summary = route.get("summary") or {}
         seconds = float(summary.get("duration") or 0)
@@ -1847,7 +1868,6 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
             coords = geo.get(loc)
             if not coords:
                 coords = geocode(loc)
-                time.sleep(0.3)
                 if not coords:
                     if MAP_ERROR["geocode"]:
                         # The provider refused us, so this says nothing about the city.
@@ -1856,10 +1876,9 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                     continue
                 geo[loc] = list(coords)
             route = route_summary(coords[0], coords[1])
-            time.sleep(0.3)
             if not route["minutes"] or not route["geometry"]:
-                raise RuntimeError("directions returned no %s" %
-                                   ("duration" if not route["minutes"] else "geometry"))
+                raise RuntimeError(MAP_ERROR["route"] or "directions returned no %s"
+                                   % ("duration" if not route["minutes"] else "geometry"))
             out.append({
                 "employer": job["employer"],
                 "job_id": str(job["id"]),
