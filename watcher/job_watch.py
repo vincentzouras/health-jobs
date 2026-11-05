@@ -1598,6 +1598,13 @@ def selftest() -> int:
     live = "ufurFz_msM~@n@"
     mcases.append(("live geometry decodes", len(decode_polyline(live)) == 2,
                    decode_polyline(live)))
+    # The stored minutes are corrected for the OSM speed model, so check the correction too.
+    mcases.extend([
+        ("calibrate 49", calibrate(49) == 40, calibrate(49)),
+        ("calibrate 110", calibrate(110) == 90, calibrate(110)),
+        ("calibrate floor", calibrate(1) == 1, calibrate(1)),
+        ("calibrate none", calibrate(None) is None, calibrate(None)),
+    ])
     # A failed render must come back on the next run, a rendered or knowingly skipped one must not.
     settled = [
         ("settled fresh", _map_settled({}) is False),
@@ -1796,6 +1803,22 @@ def _ors_json(method: str, url: str, body=None, headers=None):
             raise
 
 
+# Both OSM routers we measured (openrouteservice and OSRM) land 20-25 % above what Google Maps
+# reports for these corridors: they price a route from OSM speed limits with a hair cut plus a
+# fixed penalty at every turn and signal (ORS gave US-30 41 mph where the limit is 55), while
+# Google's "typical" figure is measured from real traffic. Three checks agree on ~0.8 - the
+# observed ~10 minute gap, OSRM matching ORS within 5 %, and the US-30 step - so the stored
+# minutes are corrected once here. `raw_min` keeps the router's own number for audit.
+DRIVE_CALIBRATION = 0.82
+
+
+def calibrate(minutes):
+    """Map a router's free-flow minutes onto something comparable to Google's estimate."""
+    if minutes is None:
+        return None
+    return max(1, int(round(minutes * DRIVE_CALIBRATION)))
+
+
 def geocode(location: str):
     """"City, ST" -> (lat, lon) via openrouteservice. None when it cannot resolve."""
     if not ORS_KEY:
@@ -1838,7 +1861,7 @@ def snap_point(lat: float, lon: float) -> tuple:
 def route_summary(dest_lat: float, dest_lon: float) -> dict:
     """Drive time and distance from the pinned origin, plus the route as an encoded polyline."""
     if not ORS_KEY:
-        return {"minutes": None, "miles": None, "geometry": ""}
+        return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
     try:
         data = _ors_json(
             "POST", "https://api.openrouteservice.org/v2/directions/driving-car",
@@ -1849,15 +1872,17 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
         summary = route.get("summary") or {}
         seconds = float(summary.get("duration") or 0)
         metres = float(summary.get("distance") or 0)
+        raw = int(round(seconds / 60)) if seconds else None
         return {
-            "minutes": int(round(seconds / 60)) if seconds else None,
+            "minutes": calibrate(raw),
+            "raw_minutes": raw,
             "miles": round(metres / 1609.344, 1) if metres else None,
             # openrouteservice encodes at precision 5; the browser decodes it to draw the line.
             "geometry": route.get("geometry") or "",
         }
     except Exception as e:
         MAP_ERROR["route"] = _err_text(e)
-        return {"minutes": None, "miles": None, "geometry": ""}
+        return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
 
 
 def _map_settled(rec: dict) -> bool:
@@ -1913,7 +1938,8 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                 "geometry": route["geometry"],
             })
             drive[key] = route["minutes"]
-            done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"]}
+            done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"],
+                         "raw": route["raw_minutes"]}
         except Exception as e:
             msg = _err_text(e)[:160]
             code = int(m.group(1)) if (m := re.match(r"HTTP (\d{3})", msg)) else 0
@@ -1981,6 +2007,8 @@ def check_maps() -> int:
     route = route_summary(snapped[0], snapped[1])
     print("route            %s min / %s mi (geometry %d chars)"
           % (route["minutes"], route["miles"], len(route.get("geometry") or "")))
+    print("router raw       %s min, corrected by x%g for the OSM speed model"
+          % (route["raw_minutes"], DRIVE_CALIBRATION))
     if not route["minutes"]:
         print("  FAILED: directions returned no duration")
         if MAP_ERROR["route"]:
