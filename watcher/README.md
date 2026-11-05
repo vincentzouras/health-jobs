@@ -58,13 +58,13 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 130 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 138 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
 $PY job_watch.py --backfill-maps     # render route cards for postings that lack one
 $PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
-$PY job_watch.py --check-maps        # prove ORS_KEY + GEOAPIFY_KEY work end to end
+$PY job_watch.py --check-maps        # prove GEOAPIFY_KEY works end to end (geocode, route, PNG)
 ```
 
 ## Geography
@@ -108,25 +108,28 @@ Every match gets a small map with the drive from **Country Club of York, 1400 Co
 York, PA 17403** (pinned at 39.9276, -76.7452). The image is rendered **once**, at ingest, and
 stored by the dashboard — viewing the board makes no routing or map calls at all.
 
-Two free keys, both in `~/.hermes/.env` and never in the browser:
+One free key, in `~/.hermes/.env` and never in the browser. Geoapify covers all three steps —
+geocoding, routing and the static map — so a single key is enough:
 
 | Var | Service | Free tier | Used for |
 |---|---|---|---|
-| `ORS_KEY` | openrouteservice | 2,000 directions + 1,000 geocodes/day | drive time, distance, route geometry |
-| `GEOAPIFY_KEY` | Geoapify Static Maps | 3,000 credits/day | the PNG itself (ORS has no static map) |
+| `GEOAPIFY_KEY` | Geoapify (Geocoding, Routing, Static Maps) | 3,000 credits/day | city → coordinates, drive time/distance, and the PNG |
+| `ORS_KEY` | openrouteservice (optional) | 2,000 directions + 1,000 geocodes/day | takes over the routing step when set |
 
-Our volume is ~3 calls per *new* posting, so a few per week. Without the keys the feature is
+Our volume is ~3 calls per *new* posting, so a few per week. Without the key the feature is
 simply absent: jobs still sync and show, they just have no map.
 
 - Geocodes are cached in `state.geo`, renders in `state.maps_done`, so nothing is done twice.
 - `_GEOCODABLE` skips synthetic locations (`Southeastern PA`) that cannot resolve.
+- Geoapify returns GeoJSON, so `encode_polyline()` re-encodes the route before it is handed to the
+  static-map `geometry=polyline:` parameter.
 - `--backfill-maps` renders for the whole board from state (no re-scrape needed).
-- `--check-maps` proves both keys in one shot: geocode the origin, geocode a corridor city, route
-  it, render the PNG and report the sizes. Run it right after adding the keys.
+- `--check-maps` proves the key in one shot: geocode the origin, geocode a corridor city, route
+  it, render the PNG and report the sizes. Run it right after adding the key.
 - `--check-origin` re-geocodes the address and fails if the pinned point has drifted >500 m.
 - Times are free-flow, not live traffic.
 
-Attribution is required by both services and appears under the map:
+Attribution is required by the services and appears under the map:
 "© OpenStreetMap contributors · Geoapify · routes by openrouteservice".
 
 ## What counts as a match

@@ -23,7 +23,7 @@ vez (Pi)                              Vercel                       Postgres (Neo
 08:00  watcher/job_watch.py
   ├─ Camofox browser ──▶ 11 job boards
   ├─ relevance filter (regex, deterministic)
-  ├─ route card per new match ──▶ ORS (drive time) + Geoapify (map PNG)
+  ├─ route card per new match ──▶ Geoapify (geocode + drive time + map PNG)
   ├─ Telegram alert ──────────────▶ phone
   └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs + job_maps
        (jobs, scanner hash, maps)             ▲               (status: new/
@@ -119,14 +119,15 @@ docs/
 ```
 JOB_BOARD_URL=https://pop-health-jobs.vercel.app
 JOB_BOARD_TOKEN=<same value as INGEST_TOKEN>
-ORS_KEY=<openrouteservice key>      # drive time, distance, route geometry
-GEOAPIFY_KEY=<geoapify key>         # the map image itself
+GEOAPIFY_KEY=<geoapify key>         # geocoding + drive time + the map image
+ORS_KEY=<openrouteservice key>      # optional: used for the drive time instead
 ```
 
 The board credentials are optional — without them the watcher still scrapes and alerts, it just
-doesn't publish to the dashboard. The two map keys are optional too: without them jobs sync
-normally, they just have no route card. Both are free tiers (openrouteservice 2,000 directions/day;
-Geoapify 3,000 static maps/day) and our usage is a few per week.
+doesn't publish to the dashboard. The map key is optional too: without it jobs sync normally, they
+just have no route card. Geoapify alone is enough (free tier: 3,000 credits/day; our usage is a few
+per week). `ORS_KEY` is only a fallback for the routing step, since ORS returns the route geometry
+and drive time in one call; set it and it takes precedence.
 
 ---
 

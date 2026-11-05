@@ -84,15 +84,24 @@ ORIGIN = {
 ORS_KEY = os.environ.get("ORS_KEY", "") or os.environ.get("OPENROUTESERVICE_KEY", "")
 GEOAPIFY_KEY = os.environ.get("GEOAPIFY_KEY", "")
 MAP_W, MAP_H = 800, 400
+# The board rejects a row over 300 KB; leave room for base64 growth.
+MAX_MAP_PNG = 280 * 1024
 # Roughly a 20 minute drive; below this the card's "too far to bother" judgement is moot.
 MAP_NEAR_MIN, MAP_FAR_MIN = 30, 60
+
+# Geoapify covers geocoding, routing and the static map, so one key is enough; ORS is used
+# for the route when it is present (it was the original choice).
+GEOAPIFY_GEOCODE = "https://api.geoapify.com/v1/geocode/search"
+GEOAPIFY_ROUTE = "https://api.geoapify.com/v1/routing"
+GEOAPIFY_STATIC = "https://maps.geoapify.com/v1/staticmap"
 
 # Locations like "Southeastern PA" are source defaults, not real places.
 _GEOCODABLE = re.compile(r",\s*(?:PA|NJ|DE|MD|NY|WV|VA)\s*$", re.I)
 
 
 def has_map_keys() -> bool:
-    return bool(ORS_KEY and GEOAPIFY_KEY)
+    """Geoapify is the one that cannot be skipped: ORS has no static-map endpoint."""
+    return bool(GEOAPIFY_KEY)
 
 
 def _http_json(method: str, url: str, body=None, headers=None, timeout: int = 30):
@@ -104,6 +113,14 @@ def _http_json(method: str, url: str, body=None, headers=None, timeout: int = 30
         req.add_header(k, v)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _post_bytes(url: str, body, timeout: int = 45) -> bytes:
+    """POST JSON and return the raw response body (the static map returns an image)."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
 
 
 def fetch_suppressed() -> set:
@@ -1531,13 +1548,75 @@ def selftest() -> int:
             lfails += 1
         print("%-6s %-46s -> %r" % ("PASS" if ok else "FAIL", body[:46].replace("\n", " "), got))
 
+    print("\n--- route card helpers ---")
+    # Reference vector from the encoded-polyline spec. Geoapify hands back GeoJSON, so this
+    # encoder is what feeds the static-map `polyline6` geometry.
+    poly_want = "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+    poly_got = encode_polyline([(-120.2, 38.5), (-120.95, 40.7), (-126.453, 43.252)], 5)
+    mcases = [("polyline p5", poly_got == poly_want, poly_got)]
+
+    def decode_polyline(text: str, precision: int = 6) -> list:
+        factor, idx, lat, lon, out = 10 ** precision, 0, 0, 0, []
+        while idx < len(text):
+            deltas = []
+            for _ in range(2):
+                shift, result = 0, 0
+                while True:
+                    b = ord(text[idx]) - 63
+                    idx += 1
+                    result |= (b & 0x1F) << shift
+                    shift += 5
+                    if b < 0x20:
+                        break
+                deltas.append(~(result >> 1) if result & 1 else (result >> 1))
+            lat, lon = lat + deltas[0], lon + deltas[1]
+            out.append((lon / factor, lat / factor))
+        return out
+
+    trip = [(-76.7452, 39.9276), (-76.0, 39.95), (-75.6055, 39.9603)]
+    back = decode_polyline(encode_polyline(trip, 6), 6)
+    drift = max(max(abs(a - b) for a, b in zip(p, q)) for p, q in zip(trip, back))
+    mcases.append(("polyline p6 roundtrip", len(back) == 3 and drift < 1e-6, round(drift, 9)))
+    geo_sample = {"features": [{"geometry": {"coordinates": [-75.6055, 39.9603]}}]}
+    mcases.append(("geocode point", _geoapify_point(geo_sample) == (39.9603, -75.6055),
+                   _geoapify_point(geo_sample)))
+    mcases.append(("geocode empty", _geoapify_point({"features": []}) is None,
+                   _geoapify_point({"features": []})))
+    route_sample = {"features": [{
+        "properties": {"distance": 98562.0, "time": 4080.0},
+        "geometry": {"type": "LineString",
+                     "coordinates": [[-76.7452, 39.9276], [-76.0, 39.95], [-75.6055, 39.9603]]},
+    }]}
+    routed = _geoapify_route(route_sample)
+    mcases.append(("route minutes", routed["minutes"] == 68, routed["minutes"]))
+    mcases.append(("route miles", routed["miles"] == 61.2, routed["miles"]))
+    mcases.append(("route precision", routed["precision"] == 6, routed["precision"]))
+    mcases.append(("route geometry", len(routed["geometry"]) >= 10, len(routed["geometry"])))
+    multi = {"features": [{
+        "properties": {"distance": 1609.344, "time": 60.0},
+        "geometry": {"type": "MultiLineString",
+                     "coordinates": [[[-76.7, 39.9], [-76.6, 39.91]], [[-76.5, 39.92]]]},
+    }]}
+    md = _geoapify_route(multi)
+    mcases.append(("multiline route", md["minutes"] == 1 and md["miles"] == 1.0
+                   and len(md["geometry"]) >= 10, (md["minutes"], md["miles"])))
+    empty = _geoapify_route({})
+    mcases.append(("route empty", empty["minutes"] is None and empty["geometry"] == "",
+                   (empty["minutes"], empty["geometry"])))
+    mfails = 0
+    for name, ok, got in mcases:
+        if not ok:
+            mfails += 1
+        print("%-6s %-20s -> %r" % ("PASS" if ok else "FAIL", name, got))
+
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
-          "%d penn failures, %d posted failures, %d location failures, %d cases total"
-          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails,
+          "%d penn failures, %d posted failures, %d location failures, %d map failures, "
+          "%d cases total"
+          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
-             + len(dcases) + len(bcases) + len(lcases)))
+             + len(dcases) + len(bcases) + len(lcases) + len(mcases)))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
-                 and postfails == 0 and lfails == 0) else 1
+                 and postfails == 0 and lfails == 0 and mfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -1653,29 +1732,106 @@ def push_maps(maps: list, run_at: str) -> str:
     return "ok (%d map%s)" % (sent, "" if sent == 1 else "s")
 
 
-def geocode(location: str):
-    """(lat, lon) for "City, ST" via OpenRouteService. None when it cannot resolve."""
-    q = urllib.parse.urlencode({
-        "api_key": ORS_KEY,
-        "text": location,
-        "size": 1,
-        "boundary.country": "USA",
-    })
-    req = urllib.request.Request(
-        "https://api.openrouteservice.org/geocode/search?" + q,
-        headers={"Accept": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = json.loads(r.read().decode("utf-8", "replace"))
+def encode_polyline(points: list, precision: int = 6) -> str:
+    """Encoded polyline from [[lon, lat], ...].
+
+    Geoapify returns route geometry as GeoJSON, but its static-map endpoint wants an encoded
+    polyline. Precision 6 matches `polyline6`; openrouteservice already hands back precision 5.
+    """
+    factor = 10 ** precision
+    out, prev_lat, prev_lon = [], 0, 0
+    for pt in points:
+        try:
+            lon, lat = float(pt[0]), float(pt[1])
+        except (TypeError, IndexError, ValueError):
+            continue
+        ilat, ilon = int(round(lat * factor)), int(round(lon * factor))
+        for delta in (ilat - prev_lat, ilon - prev_lon):
+            v = ~(delta << 1) if delta < 0 else (delta << 1)
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        prev_lat, prev_lon = ilat, ilon
+    return "".join(out)
+
+
+def _geoapify_point(data: dict):
+    """(lat, lon) from a Geoapify geocode response."""
     feats = data.get("features") or []
     if not feats:
         return None
-    lon, lat = feats[0]["geometry"]["coordinates"][:2]
-    return float(lat), float(lon)
+    coords = (feats[0].get("geometry") or {}).get("coordinates") or []
+    if len(coords) < 2:
+        return None
+    return float(coords[1]), float(coords[0])
+
+
+def _geoapify_route(data: dict) -> dict:
+    """Drive time, distance and encoded geometry from a Geoapify routing response."""
+    feat = (data.get("features") or [{}])[0]
+    props = feat.get("properties") or {}
+    geom = feat.get("geometry") or {}
+    seconds = float(props.get("time") or 0)
+    metres = float(props.get("distance") or 0)
+    line = geom.get("coordinates") or []
+    if geom.get("type") == "MultiLineString":
+        line = [pt for part in line for pt in part]
+    return {
+        "minutes": int(round(seconds / 60)) if seconds else None,
+        "miles": round(metres / 1609.344, 1) if metres else None,
+        "geometry": encode_polyline(line, 6) if line else "",
+        "precision": 6,
+    }
+
+
+def geocode(location: str):
+    """"City, ST" -> (lat, lon). None when it cannot resolve; never raises."""
+    if GEOAPIFY_KEY:
+        try:
+            q = urllib.parse.urlencode({
+                "text": location, "size": 1, "filter": "countrycode:us",
+                "apiKey": GEOAPIFY_KEY,
+            })
+            got = _geoapify_point(_http_json("GET", GEOAPIFY_GEOCODE + "?" + q, timeout=25))
+            if got:
+                return got
+        except Exception:
+            pass
+    if ORS_KEY:
+        try:
+            q = urllib.parse.urlencode({
+                "api_key": ORS_KEY, "text": location, "size": 1, "boundary.country": "USA",
+            })
+            got = _geoapify_point(_http_json("GET",
+                                             "https://api.openrouteservice.org/geocode/search?" + q,
+                                             timeout=25))
+            if got:
+                return got
+        except Exception:
+            pass
+    return None
 
 
 def route_summary(dest_lat: float, dest_lon: float) -> dict:
     """Drive time and distance from the pinned origin, plus the route geometry."""
+    if GEOAPIFY_KEY:
+        try:
+            q = urllib.parse.urlencode({
+                "waypoints": "%.6f,%.6f|%.6f,%.6f"
+                             % (ORIGIN["lat"], ORIGIN["lon"], dest_lat, dest_lon),
+                "mode": "drive",
+                "type": "balanced",
+                "units": "metric",
+                "apiKey": GEOAPIFY_KEY,
+            })
+            got = _geoapify_route(_http_json("GET", GEOAPIFY_ROUTE + "?" + q, timeout=30))
+            if got["minutes"]:
+                return got
+        except Exception:
+            pass
+    if not ORS_KEY:
+        return {"minutes": None, "miles": None, "geometry": "", "precision": 6}
     body = json.dumps({
         "coordinates": [[ORIGIN["lon"], ORIGIN["lat"]], [dest_lon, dest_lat]],
         "instructions": False,
@@ -1699,34 +1855,49 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
         "minutes": int(round(seconds / 60)) if seconds else None,
         "miles": round(metres / 1609.344, 1) if metres else None,
         "geometry": route.get("geometry") or "",
+        # openrouteservice encodes at precision 5, so the map must be told `polyline5`.
+        "precision": 5,
     }
 
 
-def static_map_png(dest_lat: float, dest_lon: float, geometry: str = "") -> bytes:
-    """Render the route to a PNG via Geoapify. Falls back to two pins if the line is rejected."""
-    markers = "|".join([
-        "lonlat:%f,%f;color:#1a7f4b;size:large;text:A" % (ORIGIN["lon"], ORIGIN["lat"]),
-        "lonlat:%f,%f;color:#1f6feb;size:large;text:B" % (dest_lon, dest_lat),
-    ])
+def static_map_png(dest_lat: float, dest_lon: float, geometry: str = "",
+                   precision: int = 6) -> bytes:
+    """Render the route to a PNG via Geoapify (POST: a whole route will not fit in a URL).
 
-    def fetch(with_line: bool) -> bytes:
-        params = [
-            ("style", "osm-bright"),
-            ("width", str(MAP_W)),
-            ("height", str(MAP_H)),
-            ("marker", markers),
-            ("apiKey", GEOAPIFY_KEY),
-        ]
-        if with_line and geometry:
-            params.append(("geometry", "polyline:" + geometry))
-        url = "https://maps.geoapify.com/v1/staticmap?" + urllib.parse.urlencode(params)
-        with urllib.request.urlopen(url, timeout=40) as r:
-            return r.read()
-
+    Falls back to two pins if the line is rejected or too heavy for the board's row cap.
+    """
+    url = GEOAPIFY_STATIC + "?" + urllib.parse.urlencode({"apiKey": GEOAPIFY_KEY})
+    body = {
+        "style": "osm-bright",
+        "width": MAP_W,
+        "height": MAP_H,
+        # JPEG is the default; the board stores and serves image/png.
+        "format": "png",
+        "markers": [
+            {"lat": ORIGIN["lat"], "lon": ORIGIN["lon"], "type": "circle",
+             "color": "#1a7f4b", "size": 42, "contentsize": 28, "text": "A"},
+            {"lat": dest_lat, "lon": dest_lon, "type": "circle",
+             "color": "#1f6feb", "size": 42, "contentsize": 28, "text": "B"},
+        ],
+    }
+    if geometry:
+        body["geometries"] = [{
+            "type": "polyline%d" % precision,
+            "value": geometry,
+            "linecolor": "#1f6feb",
+            "lineopacity": 0.9,
+            "linewidth": 5,
+            "linestyle": "solid",
+        }]
     try:
-        return fetch(True)
+        png = _post_bytes(url, body)
+        if geometry and len(png) > MAX_MAP_PNG:
+            body.pop("geometries", None)
+            png = _post_bytes(url, body)
+        return png
     except Exception:
-        return fetch(False)
+        body.pop("geometries", None)
+        return _post_bytes(url, body)
 
 
 def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
@@ -1759,7 +1930,8 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                 geo[loc] = list(coords)
             route = route_summary(coords[0], coords[1])
             time.sleep(0.3)
-            png = static_map_png(coords[0], coords[1], route.get("geometry", ""))
+            png = static_map_png(coords[0], coords[1], route.get("geometry", ""),
+                                 route.get("precision", 6))
             out.append({
                 "employer": job["employer"],
                 "job_id": str(job["id"]),
@@ -1778,8 +1950,8 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
 
 def check_origin() -> int:
     """Re-geocode the pinned origin address and report how far the pin has drifted."""
-    if not ORS_KEY:
-        print("ORS_KEY is not set")
+    if not (GEOAPIFY_KEY or ORS_KEY):
+        print("needs GEOAPIFY_KEY (or ORS_KEY) in ~/.hermes/.env")
         return 1
     got = geocode(ORIGIN["address"])
     if not got:
@@ -1796,17 +1968,19 @@ def check_origin() -> int:
 
 
 def check_maps() -> int:
-    """Prove both keys work end to end without touching the board or state."""
-    missing = [n for n, v in (("ORS_KEY", ORS_KEY), ("GEOAPIFY_KEY", GEOAPIFY_KEY)) if not v]
-    if missing:
-        print("missing in ~/.hermes/.env: %s" % ", ".join(missing))
-        print("route cards stay off until both are set - nothing else is affected")
+    """Prove the map keys work end to end without touching the board or state."""
+    if not has_map_keys():
+        print("missing in ~/.hermes/.env: GEOAPIFY_KEY")
+        print("route cards stay off until it is set - nothing else is affected")
         return 1
     rc = 0
+    print("providers        geocode+map geoapify, route %s"
+          % ("geoapify" if GEOAPIFY_KEY else "openrouteservice"))
     origin = geocode(ORIGIN["address"])
     print("geocode origin   %s -> %s" % (ORIGIN["address"], origin))
     if not origin:
         print("  FAILED: cannot resolve the pinned start address")
+        print("  a 401 here means the key is rejected, not that the address is bad")
         return 1
     dest = geocode("West Chester, PA")
     print("geocode sample   West Chester, PA -> %s" % (dest,))
@@ -1814,16 +1988,18 @@ def check_maps() -> int:
         print("  FAILED: cannot resolve a corridor city")
         return 1
     route = route_summary(dest[0], dest[1])
-    print("route            %s min / %s mi (geometry %d chars)"
-          % (route["minutes"], route["miles"], len(route.get("geometry") or "")))
+    print("route            %s min / %s mi (geometry %d chars, polyline%s)"
+          % (route["minutes"], route["miles"], len(route.get("geometry") or ""),
+             route.get("precision", 6)))
     if not route["minutes"]:
         print("  FAILED: directions returned no duration")
         rc = 1
-    png = static_map_png(dest[0], dest[1], route.get("geometry", ""))
+    png = static_map_png(dest[0], dest[1], route.get("geometry", ""), route.get("precision", 6))
     good = png[:8] == b"\x89PNG\r\n\x1a\n"
     print("static map       %d bytes, valid PNG: %s" % (len(png), good))
     if not good:
         print("  FAILED: response is not a PNG (check GEOAPIFY_KEY / style name)")
+        print("  body: %s" % png[:160].decode("utf-8", "replace"))
         rc = 1
     print("OK" if rc == 0 else "see failures above")
     return rc
@@ -1832,7 +2008,7 @@ def check_maps() -> int:
 def backfill_maps(st, relevant: dict) -> int:
     """Render route cards for every relevant job that does not have one yet."""
     if not has_map_keys():
-        print("needs ORS_KEY and GEOAPIFY_KEY in ~/.hermes/.env - nothing to do")
+        print("needs GEOAPIFY_KEY in ~/.hermes/.env - nothing to do")
         return 1
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     todo = {k: v for k, v in relevant.items() if k not in st.get("maps_done", {})}

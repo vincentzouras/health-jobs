@@ -59,7 +59,7 @@ never calls a map or routing service: `<img src="/api/map/<id>">` is served from
   (300 KB) — a bad image never fails the batch.
 - The drive chip is colour-coded by commute length (<30 min, 30–60, >60), and the image opens a
   dialog with the attribution line and an "Open in Google Maps" deep link.
-- Times are free-flow estimates from openrouteservice — not live traffic.
+- Times are free-flow estimates from Geoapify routing — not live traffic.
 
 ## Notes
 

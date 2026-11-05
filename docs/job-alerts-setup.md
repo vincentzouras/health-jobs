@@ -156,9 +156,9 @@ Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in
 [`web/`](../web/), deployed by Vercel on push to `main` with **Root Directory = `web`**.
 Repo: `github.com/vincentzouras/pop-health-jobs`.
 `INGEST_TOKEN` is set in Vercel (production + preview) and in `~/.hermes/.env` on the Pi.
-Route cards need two more Pi-only variables: `ORS_KEY` (openrouteservice) and `GEOAPIFY_KEY`
-(static maps). Both free, neither reaches the browser — the Pi renders each map once and the
-dashboard stores it.
+Route cards need one more Pi-only variable: `GEOAPIFY_KEY` (geocoding, routing and static maps in
+one key). `ORS_KEY` is optional and only takes over the drive-time step if present. Both are free,
+neither reaches the browser — the Pi renders each map once and the dashboard stores it.
 
 ## What self-heals vs. what alerts you
 
