@@ -1803,6 +1803,9 @@ def geocode(location: str):
     try:
         q = urllib.parse.urlencode({
             "api_key": ORS_KEY, "text": location, "size": 1, "boundary.country": "USA",
+            # City-level layers only: a venue or a county centroid can land off-road, which
+            # the routing step then rejects outright (404 "no routable point within 350 m").
+            "layers": "locality,localadmin,borough",
         })
         got = _geojson_point(_ors_json(
             "GET", "https://api.openrouteservice.org/geocode/search?" + q))
@@ -1892,15 +1895,23 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
             drive[key] = route["minutes"]
             done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"]}
         except Exception as e:
-            # Leave the record unsettled so the next run tries again: a bad key or a blip must
-            # not cost a card its map for good. Bail out early rather than burn a call per job.
-            provider_fails += 1
-            msg = _err_text(e)[:120]
-            done[key] = {"err": msg}
-            if provider_fails >= 3:
-                print("maps: stopping this run after %d failure(s) - %s" % (provider_fails, msg))
-                break
-            time.sleep(1.0)
+            msg = _err_text(e)[:160]
+            code = int(m.group(1)) if (m := re.match(r"HTTP (\d{3})", msg)) else 0
+            if code in (401, 403, 429) or code >= 500 or code == 0:
+                # The key or the service, not this posting: try again next run and stop early
+                # rather than paying for a call per job.
+                provider_fails += 1
+                done[key] = {"err": msg, "loc": loc}
+                print("maps: %-34s %s" % (loc[:34], msg[:80]))
+                if provider_fails >= 3:
+                    print("maps: stopping this run after %d provider failure(s)" % provider_fails)
+                    break
+                time.sleep(1.0)
+            else:
+                # This one address will not route (no road near the geocoded point). Leave it
+                # unsettled so a better location or a data fix picks it up on a later run.
+                done[key] = {"err": msg, "loc": loc}
+                print("maps: %-34s unroutable (%s)" % (loc[:34], msg[:70]))
     return out, drive
 
 
