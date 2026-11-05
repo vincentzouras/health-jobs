@@ -88,10 +88,6 @@ _GEOCODABLE = re.compile(
 _REGION_WORD = re.compile(
     r"\b(?:Southeastern|Southwestern|Northeastern|Northwestern|Central|Statewide|"
     r"Various|Multiple|Remote|Hybrid)\b", re.I)
-_STATE_ABBR = {
-    "pennsylvania": "PA", "new jersey": "NJ", "delaware": "DE", "maryland": "MD",
-    "new york": "NY", "west virginia": "WV", "virginia": "VA",
-}
 
 
 def normalize_location(loc) -> str:
@@ -1117,6 +1113,12 @@ _STATE_ABBR = {
     "pennsylvania": "PA", "new jersey": "NJ", "delaware": "DE", "maryland": "MD",
     "new york": "NY", "west virginia": "WV", "virginia": "VA",
 }
+# Used to confirm a geocoder hit is in the state we asked for.
+_STATE_NAMES = {
+    "PA": ("pa", "pennsylvania"), "NJ": ("nj", "new jersey"), "DE": ("de", "delaware"),
+    "MD": ("md", "maryland"), "NY": ("ny", "new york"), "WV": ("wv", "west virginia"),
+    "VA": ("va", "virginia"),
+}
 _LOC_IN_BODY = re.compile(
     r"([A-Z][A-Za-z.'\-]*(?:[ ][A-Z][A-Za-z.'\-]*){0,3}),\s*"
     r"(PA|NJ|DE|MD|NY|WV|VA|Pennsylvania|New Jersey|Delaware|Maryland|New York|"
@@ -1561,13 +1563,49 @@ def selftest() -> int:
     print("\n--- route card helpers ---")
     # openrouteservice speaks Pelias/GeoJSON for geocoding; the map itself is drawn in the
     # browser from the encoded polyline, so these are the only shapes the Pi has to parse.
-    geo_sample = {"features": [{"geometry": {"coordinates": [-75.6055, 39.9603]}}]}
-    mcases = [("geocode point", _geojson_point(geo_sample) == (39.9603, -75.6055),
-               _geojson_point(geo_sample)),
-              ("geocode empty", _geojson_point({"features": []}) is None,
-               _geojson_point({"features": []})),
-              ("geocode no geometry", _geojson_point({"features": [{}]}) is None,
-               _geojson_point({"features": [{}]}))]
+    # Real candidates for "Northeast Philadelphia, PA": the locality-only filter used to return
+    # exactly this garbage, and picking the first USA hit put the card 50 miles from York.
+    ne_philly = {"features": [
+        {"properties": {"label": "Castelnovo ne' Monti, Italy", "region": "Emilia-Romagna"},
+         "geometry": {"coordinates": [10.4031, 44.4339]}},
+        {"properties": {"label": "Northeast Ithaca, NY, USA", "region": "New York",
+                        "region_a": "NY", "name": "Northeast Ithaca"},
+         "geometry": {"coordinates": [-76.4620, 42.4711]}},
+        {"properties": {"label": "Northeast Philadelphia, Philadelphia County, PA, USA",
+                        "region": "Pennsylvania", "region_a": "PA", "name": "Northeast Philadelphia"},
+         "geometry": {"coordinates": [-75.0290, 40.0642]}},
+    ]}
+    mcases = [
+        ("pick ne philly", _pick_point(ne_philly, "Northeast Philadelphia, PA") == (40.0642, -75.0290),
+         _pick_point(ne_philly, "Northeast Philadelphia, PA")),
+        # The state and the name both have to line up, or it is not our place.
+        ("pick wrong state", _pick_point(ne_philly, "Northeast Philadelphia, DE") is None,
+         _pick_point(ne_philly, "Northeast Philadelphia, DE")),
+        ("pick empty", _pick_point({"features": []}, "York, PA") is None,
+         _pick_point({"features": []}, "York, PA")),
+    ]
+    mcases.append(("state of", _state_of("Northeast Philadelphia, PA") == "PA"
+                   and _state_of("Wilmington, Delaware") == "DE"
+                   and _state_of("York, PA 17403") == "PA"
+                   and _state_of("Southeastern PA") == "PA",
+                   [_state_of(x) for x in ("Northeast Philadelphia, PA", "Wilmington, Delaware",
+                                           "York, PA 17403", "Southeastern PA")]))
+    # The two coordinates involved, measured from Country Club of York.
+    york_cc = (39.9276, -76.7452)
+    ne_true = (40.0642, -75.0290)      # real Northeast Philadelphia, ~96 mi away
+    ne_wrong = (40.4048, -77.4455)     # what the locality-only filter returned, ~50 mi away
+    mcases.append(("straight line to NE Philly",
+                   abs(_straight_miles(*york_cc, *ne_true) - 96) < 8,
+                   round(_straight_miles(*york_cc, *ne_true), 1)))
+    # A 59 mi route to a place 50 mi away is plausible, so the length guard stays silent; that
+    # is exactly why the fix belongs in _pick_point. It still catches an impossible distance.
+    mcases.append(("bad hit is plausible",
+                   _route_too_short(59, _straight_miles(*york_cc, *ne_wrong)) is False,
+                   round(_straight_miles(*york_cc, *ne_wrong), 1)))
+    mcases.append(("impossible route caught", _route_too_short(59, 96.0) is True,
+                   _route_too_short(59, 96.0)))
+    mcases.append(("normal route allowed", _route_too_short(118, 96.0) is False,
+                   _route_too_short(118, 96.0)))
 
     def decode_polyline(text: str, precision: int = 5) -> list:
         """The exact algorithm the dashboard uses, so the Pi-side test proves the pair agree."""
@@ -1760,17 +1798,6 @@ def push_maps(maps: list, run_at: str) -> str:
     return "ok (%d map%s)" % (sent, "" if sent == 1 else "s")
 
 
-def _geojson_point(data: dict):
-    """(lat, lon) from a Pelias/GeoJSON geocode response."""
-    feats = data.get("features") or []
-    if not feats:
-        return None
-    coords = (feats[0].get("geometry") or {}).get("coordinates") or []
-    if len(coords) < 2:
-        return None
-    return float(coords[1]), float(coords[0])
-
-
 def _err_text(e) -> str:
     """An HTTP error body is the only thing that says *why* a provider refused us."""
     if isinstance(e, urllib.error.HTTPError):
@@ -1819,21 +1846,56 @@ def calibrate(minutes):
     return max(1, int(round(minutes * DRIVE_CALIBRATION)))
 
 
+def _state_of(loc: str) -> str:
+    """"Northeast Philadelphia, PA" -> "PA"; "" when the string carries no state."""
+    s = re.sub(r"\s+\d{5}(?:-\d{4})?$", "", (loc or "").strip())
+    for abbr, names in _STATE_NAMES.items():
+        for name in names:
+            # Either "City, PA" or a bare "... PA"; a word boundary keeps "Parade" out.
+            if re.search(r"(?:^|[\s,])%s$" % re.escape(name), s, re.I):
+                return abbr
+    return ""
+
+
+def _pick_point(data: dict, wanted: str):
+    """Choose the geocoder hit that actually is the place we asked for.
+
+    Pelias happily returns a fuzzy match: asking for "Northeast Philadelphia, PA" with a
+    locality-only layer filter produced "Northeast Ithaca, NY" and, once filtered to the USA,
+    a locality 50 miles from York. So a hit has to carry the same state and the same name.
+    """
+    head = (wanted or "").split(",")[0].strip().lower()
+    state = _state_of(wanted)
+    for feat in data.get("features") or []:
+        props = feat.get("properties") or {}
+        coords = (feat.get("geometry") or {}).get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        label = (props.get("label") or "").lower()
+        region = ("%s %s" % (props.get("region_a") or "", props.get("region") or "")).lower()
+        name = (props.get("name") or "").lower()
+        if state and not any(n in region for n in _STATE_NAMES[state]):
+            continue
+        if head and head not in label and name not in head:
+            continue
+        return float(coords[1]), float(coords[0])
+    return None
+
+
 def geocode(location: str):
-    """"City, ST" -> (lat, lon) via openrouteservice. None when it cannot resolve."""
+    """"City, ST" -> (lat, lon) via openrouteservice. None when nothing matches convincingly."""
     if not ORS_KEY:
         return None
     try:
         q = urllib.parse.urlencode({
-            "api_key": ORS_KEY, "text": location, "size": 1, "boundary.country": "USA",
-            # City-level layers only: a venue or a county centroid can land off-road, which
-            # the routing step then rejects outright (404 "no routable point within 350 m").
-            "layers": "locality,localadmin,borough",
+            "api_key": ORS_KEY, "text": location, "size": 5, "boundary.country": "USA",
+            "lang": "en",
         })
-        got = _geojson_point(_ors_json(
-            "GET", "https://api.openrouteservice.org/geocode/search?" + q))
+        got = _pick_point(_ors_json(
+            "GET", "https://api.openrouteservice.org/geocode/search?" + q), location)
         if got:
             return got
+        MAP_ERROR["geocode"] = "no match for %r in %s" % (location, _state_of(location) or "?")
     except Exception as e:
         MAP_ERROR["geocode"] = _err_text(e)
     return None
@@ -1885,6 +1947,23 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
         return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
 
 
+def _straight_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle-ish distance, accurate enough to sanity-check a route length."""
+    dlat = (lat2 - lat1) * 69.05
+    dlon = (lon2 - lon1) * 69.05 * math.cos(math.radians((lat1 + lat2) / 2.0))
+    return math.hypot(dlat, dlon)
+
+
+def _route_too_short(route_miles, straight_miles) -> bool:
+    """A road distance below the straight line between its ends cannot be real.
+
+    Catches a reversed or scrambled coordinate, not a wrong-but-nearby geocode: a route to a
+    place 50 miles away that reports 59 miles is geographically plausible, so only the
+    geocoder's own state/name check can reject that one.
+    """
+    return bool(route_miles and straight_miles > 5 and route_miles < straight_miles * 0.9)
+
+
 def _map_settled(rec: dict) -> bool:
     """Rendered, or knowingly skipped. Anything else is retried on the next run."""
     return bool(rec.get("skipped") or rec.get("at"))
@@ -1927,6 +2006,10 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
             if not route["minutes"] or not route["geometry"]:
                 raise RuntimeError(MAP_ERROR["route"] or "directions returned no %s"
                                    % ("duration" if not route["minutes"] else "geometry"))
+            straight = _straight_miles(ORIGIN["lat"], ORIGIN["lon"], coords[0], coords[1])
+            if _route_too_short(route["miles"], straight):
+                raise RuntimeError("%s mi route beats the %.0f mi straight line to %s"
+                                   % (route["miles"], straight, loc))
             out.append({
                 "employer": job["employer"],
                 "job_id": str(job["id"]),
