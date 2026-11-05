@@ -60,7 +60,9 @@ decodes the polyline and draws it over OpenStreetMap tiles with Leaflet.
   (20 KB) — a bad route never fails the batch.
 - The drive chip is colour-coded by commute length (<30 min, 30–60, >60); "Open map" shows a
   zoomable version with markers for both ends.
-- Times are free-flow estimates from openrouteservice — not live traffic.
+- Times come from openrouteservice and are corrected by a factor of 0.82 before display, because
+  OSM-based routers run ~20 % above Google Maps on these corridors (see the watcher README for the
+  measurements). They are free-flow estimates, not live traffic.
 
 Tiles come from `tile.openstreetmap.org` under the
 [tile usage policy](https://operations.osmfoundation.org/policies/tiles/): normal browser

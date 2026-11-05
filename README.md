@@ -37,7 +37,8 @@ Each card also carries a **route card** — the drive from the Country Club of Y
 OpenStreetMap tiles, with the time and distance. The Pi resolves the route once at ingest and
 stores the encoded polyline (~2 KB) in Postgres, so the dashboard makes no routing requests:
 Leaflet draws the line in the browser from data already in the page, and only for cards that are
-actually on screen.
+actually on screen. Stored minutes are corrected by 0.82, because the OSM-based router runs ~20 %
+above Google Maps on these corridors (measurements in [watcher/README.md](watcher/README.md)).
 
 **No LLM runs in the pipeline.** Hermes cron is only a scheduler: both jobs use `--no-agent`,
 so the script's stdout *is* the Telegram message and empty stdout sends nothing. Relevance is a

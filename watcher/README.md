@@ -132,7 +132,12 @@ simply absent: jobs still sync and show, they just have no map.
 - `--check-origin` re-geocodes the address and fails if the pinned point has drifted >500 m.
 - A failure is left unsettled so the next run retries it; only an auth/quota error counts towards
   the three-strikes stop, so one odd address cannot end a backfill early.
-- Times are free-flow, not live traffic.
+- Times are free-flow, and the router's own minutes are multiplied by `DRIVE_CALIBRATION` (0.82)
+  before they are stored. Measured, not guessed: openrouteservice and OSRM agree within 5 % on the
+  same corridors and both sit ~20 % above Google Maps, because they price a route from OSM speed
+  limits with a hair cut plus a fixed penalty at every turn and signal (ORS gives US-30 41 mph
+  where the limit is 55), while Google's "typical" figure is measured from real traffic. The raw
+  router value is kept in `state.maps_done[...]["raw"]` and printed by `--check-maps`.
 
 Attribution is shown in the map corner: "© OpenStreetMap contributors · route by
 openrouteservice".
