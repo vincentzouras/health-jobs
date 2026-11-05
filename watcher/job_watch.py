@@ -1952,7 +1952,12 @@ _last_ors_call = [0.0]
 
 
 def _ors_json(method: str, url: str, body=None, headers=None):
-    for attempt in range(3):
+    """ORS call with free-tier pacing.
+
+    Only a rate limit (429) is worth waiting out - it clears in seconds. A 403 is the daily
+    quota, which will not clear inside a run, so it is raised at once and the caller falls back.
+    """
+    for attempt in range(2):
         gap = time.time() - _last_ors_call[0]
         if gap < ORS_MIN_INTERVAL:
             time.sleep(ORS_MIN_INTERVAL - gap)
@@ -1960,8 +1965,8 @@ def _ors_json(method: str, url: str, body=None, headers=None):
         try:
             return _http_json(method, url, body, headers, timeout=30)
         except urllib.error.HTTPError as e:
-            if e.code in (429, 403) and attempt < 2:
-                time.sleep(20 * (attempt + 1))
+            if e.code == 429 and attempt < 1:
+                time.sleep(20)
                 continue
             raise
 
@@ -2128,6 +2133,10 @@ def _out_of_quota(text: str) -> bool:
     return any(t in (text or "") for t in ("Quota", "quota", "429", "403", "Too Many"))
 
 
+# Set once openrouteservice refuses on quota, so the rest of the run goes straight to OSRM.
+ORS_SPENT = [False]
+
+
 def _straight_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle-ish distance, accurate enough to sanity-check a route length."""
     dlat = (lat2 - lat1) * 69.05
@@ -2151,29 +2160,32 @@ def route_summary(cluster: str, dest_lat: float, dest_lon: float) -> dict:
     empty = {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
     if not ORS_KEY:
         return empty
-    try:
-        data = _ors_json(
-            "POST", "https://api.openrouteservice.org/v2/directions/driving-car",
-            {"coordinates": [[origin["lon"], origin["lat"]], [dest_lon, dest_lat]],
-             "instructions": False},
-            {"Authorization": ORS_KEY, "Accept": "application/json"})
-        route = (data.get("routes") or [{}])[0]
-        summary = route.get("summary") or {}
-        seconds = float(summary.get("duration") or 0)
-        metres = float(summary.get("distance") or 0)
-        raw = int(round(seconds / 60)) if seconds else None
-        return {
-            "minutes": calibrate(raw),
-            "raw_minutes": raw,
-            "miles": round(metres / 1609.344, 1) if metres else None,
-            # openrouteservice encodes at precision 5; the browser decodes it to draw the line.
-            "geometry": route.get("geometry") or "",
-            "source": "ors",
-        }
-    except Exception as e:
-        MAP_ERROR["route"] = _err_text(e)
-        if not _out_of_quota(MAP_ERROR["route"]):
-            return empty
+    if not ORS_SPENT[0]:
+        try:
+            data = _ors_json(
+                "POST", "https://api.openrouteservice.org/v2/directions/driving-car",
+                {"coordinates": [[origin["lon"], origin["lat"]], [dest_lon, dest_lat]],
+                 "instructions": False},
+                {"Authorization": ORS_KEY, "Accept": "application/json"})
+            route = (data.get("routes") or [{}])[0]
+            summary = route.get("summary") or {}
+            seconds = float(summary.get("duration") or 0)
+            metres = float(summary.get("distance") or 0)
+            raw = int(round(seconds / 60)) if seconds else None
+            return {
+                "minutes": calibrate(raw),
+                "raw_minutes": raw,
+                "miles": round(metres / 1609.344, 1) if metres else None,
+                # openrouteservice encodes at precision 5; the browser decodes it to draw it.
+                "geometry": route.get("geometry") or "",
+                "source": "ors",
+            }
+        except Exception as e:
+            MAP_ERROR["route"] = _err_text(e)
+            if not _out_of_quota(MAP_ERROR["route"]):
+                return empty
+            # The quota will not come back during this run: stop asking, use the fallback.
+            ORS_SPENT[0] = True
     try:
         return route_via_osrm(cluster, dest_lat, dest_lon)
     except Exception as e:
