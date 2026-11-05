@@ -64,6 +64,7 @@ $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jo
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
 $PY job_watch.py --backfill-maps     # render route cards for postings that lack one
 $PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
+$PY job_watch.py --check-maps        # prove ORS_KEY + GEOAPIFY_KEY work end to end
 ```
 
 ## Geography
@@ -120,6 +121,8 @@ simply absent: jobs still sync and show, they just have no map.
 - Geocodes are cached in `state.geo`, renders in `state.maps_done`, so nothing is done twice.
 - `_GEOCODABLE` skips synthetic locations (`Southeastern PA`) that cannot resolve.
 - `--backfill-maps` renders for the whole board from state (no re-scrape needed).
+- `--check-maps` proves both keys in one shot: geocode the origin, geocode a corridor city, route
+  it, render the PNG and report the sizes. Run it right after adding the keys.
 - `--check-origin` re-geocodes the address and fails if the pinned point has drifted >500 m.
 - Times are free-flow, not live traffic.
 

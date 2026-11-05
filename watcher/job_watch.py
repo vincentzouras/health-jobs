@@ -1795,6 +1795,40 @@ def check_origin() -> int:
     return 0 if metres < 500 else 1
 
 
+def check_maps() -> int:
+    """Prove both keys work end to end without touching the board or state."""
+    missing = [n for n, v in (("ORS_KEY", ORS_KEY), ("GEOAPIFY_KEY", GEOAPIFY_KEY)) if not v]
+    if missing:
+        print("missing in ~/.hermes/.env: %s" % ", ".join(missing))
+        print("route cards stay off until both are set - nothing else is affected")
+        return 1
+    rc = 0
+    origin = geocode(ORIGIN["address"])
+    print("geocode origin   %s -> %s" % (ORIGIN["address"], origin))
+    if not origin:
+        print("  FAILED: cannot resolve the pinned start address")
+        return 1
+    dest = geocode("West Chester, PA")
+    print("geocode sample   West Chester, PA -> %s" % (dest,))
+    if not dest:
+        print("  FAILED: cannot resolve a corridor city")
+        return 1
+    route = route_summary(dest[0], dest[1])
+    print("route            %s min / %s mi (geometry %d chars)"
+          % (route["minutes"], route["miles"], len(route.get("geometry") or "")))
+    if not route["minutes"]:
+        print("  FAILED: directions returned no duration")
+        rc = 1
+    png = static_map_png(dest[0], dest[1], route.get("geometry", ""))
+    good = png[:8] == b"\x89PNG\r\n\x1a\n"
+    print("static map       %d bytes, valid PNG: %s" % (len(png), good))
+    if not good:
+        print("  FAILED: response is not a PNG (check GEOAPIFY_KEY / style name)")
+        rc = 1
+    print("OK" if rc == 0 else "see failures above")
+    return rc
+
+
 def backfill_maps(st, relevant: dict) -> int:
     """Render route cards for every relevant job that does not have one yet."""
     if not has_map_keys():
@@ -1848,6 +1882,8 @@ def main() -> int:
         return backfill_location(st)
     if "--check-origin" in args:
         return check_origin()
+    if "--check-maps" in args:
+        return check_maps()
     if "--backfill-maps" in args:
         return backfill_maps(st, relevant_from_state(st))
     found, errors = collect(st.get("source_health", {}))
