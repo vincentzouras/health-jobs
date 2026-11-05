@@ -58,13 +58,13 @@ PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 $PY job_watch.py             # normal run — silent unless something is new
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 138 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 149 filter + parser tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
-$PY job_watch.py --backfill-maps     # render route cards for postings that lack one
+$PY job_watch.py --backfill-maps     # resolve route cards for postings that lack one
 $PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
-$PY job_watch.py --check-maps        # prove GEOAPIFY_KEY works end to end (geocode, route, PNG)
+$PY job_watch.py --check-maps        # prove ORS_KEY end to end (geocode, snap, route)
 ```
 
 ## Geography
@@ -104,33 +104,38 @@ real city is printed on the card, and anything wrong goes through the normal not
 
 ## Route cards (map + drive time)
 
-Every match gets a small map with the drive from **Country Club of York, 1400 Country Club Rd,
-York, PA 17403** (pinned at 39.9276, -76.7452). The image is rendered **once**, at ingest, and
-stored by the dashboard — viewing the board makes no routing or map calls at all.
+Every match gets the drive from **Country Club of York, 1400 Country Club Rd, York, PA 17403**
+(pinned at 39.9276, -76.7452). The route is resolved **once**, at ingest, and the encoded polyline
+(~2 KB) is stored by the dashboard — viewing the board makes no routing call at all, and the map
+is drawn in the browser over OpenStreetMap tiles.
 
-One free key, in `~/.hermes/.env` and never in the browser. Geoapify covers all three steps —
-geocoding, routing and the static map — so a single key is enough:
+One free key, in `~/.hermes/.env` and never in the browser:
 
 | Var | Service | Free tier | Used for |
 |---|---|---|---|
-| `GEOAPIFY_KEY` | Geoapify (Geocoding, Routing, Static Maps) | 3,000 credits/day | city → coordinates, drive time/distance, and the PNG |
-| `ORS_KEY` | openrouteservice (optional) | 2,000 directions + 1,000 geocodes/day | takes over the routing step when set |
+| `ORS_KEY` | openrouteservice | 2,000 directions + 1,000 geocodes/day | city → coordinates, snap to road, drive time/distance, route geometry |
 
 Our volume is ~3 calls per *new* posting, so a few per week. Without the key the feature is
 simply absent: jobs still sync and show, they just have no map.
 
-- Geocodes are cached in `state.geo`, renders in `state.maps_done`, so nothing is done twice.
-- `_GEOCODABLE` skips synthetic locations (`Southeastern PA`) that cannot resolve.
-- Geoapify returns GeoJSON, so `encode_polyline()` re-encodes the route before it is handed to the
-  static-map `geometry=polyline:` parameter.
-- `--backfill-maps` renders for the whole board from state (no re-scrape needed).
-- `--check-maps` proves the key in one shot: geocode the origin, geocode a corridor city, route
-  it, render the PNG and report the sizes. Run it right after adding the key.
+- Geocodes are cached in `state.geo`, resolved routes in `state.maps_done`, so nothing is done twice.
+- `normalize_location()` tidies what the boards publish (`"West Chester, PA, United States"`,
+  `"Wilmington, Delaware"`, `"York, PA 17403"`) into `"City, ST"`; `geocodable()` then rejects
+  regions (`"Southeastern PA"`), which are source defaults rather than places.
+- `snap_point()` puts the geocoded city on the nearest road first: openrouteservice geocodes
+  Wilmington, DE into the Delaware River and then refuses to route to it.
+- `_ors_json()` paces calls to 40/minute (the free-tier limit) and backs off on 429/403, because a
+  backfill fires two calls per posting.
+- `--backfill-maps` resolves for the whole board from state (no re-scrape needed).
+- `--check-maps` proves the key in one shot: geocode the origin, geocode a corridor city, snap it,
+  route it and report the time, distance and geometry size. Run it right after adding the key.
 - `--check-origin` re-geocodes the address and fails if the pinned point has drifted >500 m.
+- A failure is left unsettled so the next run retries it; only an auth/quota error counts towards
+  the three-strikes stop, so one odd address cannot end a backfill early.
 - Times are free-flow, not live traffic.
 
-Attribution is required by the services and appears under the map:
-"© OpenStreetMap contributors · Geoapify · routes by openrouteservice".
+Attribution is shown in the map corner: "© OpenStreetMap contributors · route by
+openrouteservice".
 
 ## What counts as a match
 

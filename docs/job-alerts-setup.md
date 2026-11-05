@@ -134,9 +134,10 @@ deletable). So the archive doubles as the queue of everything that slipped throu
 needs a filter change.
 
 Every card also shows a small **route card**: the drive from Country Club of York with the time
-and distance, colour-coded by commute length. The image is rendered once on the Pi and stored in
-Postgres, so the page loads it from `/api/map/<id>` (immutable, CDN-cached) and never calls a map
-service. Clicking it opens a larger view with a Google Maps directions link.
+and distance, colour-coded by commute length. The Pi resolves it once at ingest and stores the
+encoded polyline in Postgres, so the page makes no routing call — Leaflet draws the line over
+OpenStreetMap tiles from data already in the page. Clicking it opens a zoomable version with a
+Google Maps directions link.
 
 ```
 vez (Pi)                            Vercel                         Postgres (Neon)
@@ -156,9 +157,9 @@ Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in
 [`web/`](../web/), deployed by Vercel on push to `main` with **Root Directory = `web`**.
 Repo: `github.com/vincentzouras/pop-health-jobs`.
 `INGEST_TOKEN` is set in Vercel (production + preview) and in `~/.hermes/.env` on the Pi.
-Route cards need one more Pi-only variable: `GEOAPIFY_KEY` (geocoding, routing and static maps in
-one key). `ORS_KEY` is optional and only takes over the drive-time step if present. Both are free,
-neither reaches the browser — the Pi renders each map once and the dashboard stores it.
+Route cards need one more Pi-only variable: `ORS_KEY` (openrouteservice, which covers geocoding,
+road-snapping and directions). It is free and never reaches the browser — the Pi resolves each
+route once and the dashboard stores the polyline.
 
 ## What self-heals vs. what alerts you
 

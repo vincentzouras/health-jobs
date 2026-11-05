@@ -24,8 +24,7 @@ job_watch.py   ──POST /api/ingest──▶  API (token auth)  ──upsert�
 | `GET` | `/api/jobs` | public | `{ active, archive, meta }` — each job carries `status` and `statusReason` |
 | `PATCH` | `/api/jobs/:id` | public | body `{ "status": "new" \| "applied" \| "ignored", "reason"?: string }` |
 | `DELETE` | `/api/jobs/:id` | public | purges an `ignored` row outright (409 for `applied`) |
-| `GET` | `/api/map/:id` | public | the stored route card as `image/png`, `immutable`, 404 when absent |
-| `POST` | `/api/ingest` | `x-ingest-token` header | body `{ "run_at": iso, "scanner"?: string, "jobs": [{ employer, job_id, title, location, url }], "maps"?: [{ employer, job_id, drive_min, drive_mi, origin_label, png }] }` |
+| `POST` | `/api/ingest` | `x-ingest-token` header | body `{ "run_at": iso, "scanner"?: string, "jobs": [{ employer, job_id, title, location, url }], "maps"?: [{ employer, job_id, drive_min, drive_mi, origin_label, geometry }] }` |
 | `GET` | `/api/suppressed` | public | `{ suppressed: [{ employer, id }] }` for the Pi |
 
 Job ids are `sha1(employer + "|" + job_id).slice(0,16)`, computed server-side, so the Pi
@@ -48,18 +47,24 @@ npm run dev
 
 ## Route cards
 
-Each job can carry one map image plus a drive time, rendered **once** on the Pi at ingest and
-stored in `job_maps` (a `bytea` PNG, the minutes, the miles and the origin label). The dashboard
-never calls a map or routing service: `<img src="/api/map/<id>">` is served from Postgres with
-`public, max-age=31536000, immutable`, so the edge caches it after the first hit.
+Each job can carry the drive from the pinned origin, resolved **once** on the Pi at ingest and
+stored in `job_maps` as an encoded polyline (~2 KB) plus the minutes, the miles and the origin
+label. Nothing is rendered to an image and the dashboard calls no routing service — `RouteMap.tsx`
+decodes the polyline and draws it over OpenStreetMap tiles with Leaflet.
 
+- The map mounts lazily (IntersectionObserver), so a board of 50 jobs creates only the handful of
+  maps on screen instead of 50 maps and 50 tile sets.
 - Only on-board jobs get one; a posting whose location cannot be geocoded (`Southeastern PA`)
   simply has no card.
-- `mapsSkipped` in the ingest response counts images that were empty or over `MAX_MAP_BYTES`
-  (300 KB) — a bad image never fails the batch.
-- The drive chip is colour-coded by commute length (<30 min, 30–60, >60), and the image opens a
-  dialog with the attribution line and an "Open in Google Maps" deep link.
-- Times are free-flow estimates from Geoapify routing — not live traffic.
+- `mapsSkipped` in the ingest response counts entries with no geometry or one over `MAX_GEOMETRY`
+  (20 KB) — a bad route never fails the batch.
+- The drive chip is colour-coded by commute length (<30 min, 30–60, >60); "Open map" shows a
+  zoomable version with markers for both ends.
+- Times are free-flow estimates from openrouteservice — not live traffic.
+
+Tiles come from `tile.openstreetmap.org` under the
+[tile usage policy](https://operations.osmfoundation.org/policies/tiles/): normal browser
+requests, no prefetching, attribution shown in the map corner.
 
 ## Notes
 

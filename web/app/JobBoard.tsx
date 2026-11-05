@@ -174,7 +174,7 @@ function RouteCard({
           Directions ↗
         </Link>
         <Button size="small" onClick={() => setOpen(true)} sx={{ minWidth: 0 }}>
-          Larger
+          Open map
         </Button>
       </Stack>
 
@@ -194,12 +194,21 @@ function RouteCard({
             interactive
           />
           <Stack direction="row" spacing={1} sx={{ mt: 1.5, alignItems: 'center' }}>
-            <Typography variant="caption" color="text.secondary">
-              © OpenStreetMap contributors · route by openrouteservice
-            </Typography>
+            <Link
+              href={job.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="caption"
+              underline="hover"
+            >
+              View posting ↗
+            </Link>
             <Box sx={{ flex: 1 }} />
             <Button size="small" href={googleMaps} target="_blank" rel="noopener noreferrer">
               Directions
+            </Button>
+            <Button size="small" onClick={() => setOpen(false)}>
+              Close
             </Button>
           </Stack>
         </DialogContent>

@@ -23,7 +23,7 @@ vez (Pi)                              Vercel                       Postgres (Neo
 08:00  watcher/job_watch.py
   ├─ Camofox browser ──▶ 11 job boards
   ├─ relevance filter (regex, deterministic)
-  ├─ route card per new match ──▶ Geoapify (geocode + drive time + map PNG)
+  ├─ route card per new match ──▶ openrouteservice (geocode, snap, drive time)
   ├─ Telegram alert ──────────────▶ phone
   └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs + job_maps
        (jobs, scanner hash, maps)             ▲               (status: new/
@@ -33,9 +33,11 @@ vez (Pi)                              Vercel                       Postgres (Neo
            (skips jobs already applied to)
 ```
 
-Each card also carries a **route card** — a map image plus drive time from the Country Club of
-York. It is rendered once on the Pi at ingest and stored in Postgres, so the dashboard makes no
-map or routing requests at all: `/api/map/<id>` serves the stored PNG with an immutable cache.
+Each card also carries a **route card** — the drive from the Country Club of York, drawn over
+OpenStreetMap tiles, with the time and distance. The Pi resolves the route once at ingest and
+stores the encoded polyline (~2 KB) in Postgres, so the dashboard makes no routing requests:
+Leaflet draws the line in the browser from data already in the page, and only for cards that are
+actually on screen.
 
 **No LLM runs in the pipeline.** Hermes cron is only a scheduler: both jobs use `--no-agent`,
 so the script's stdout *is* the Telegram message and empty stdout sends nothing. Relevance is a
@@ -86,12 +88,13 @@ web/
     page.tsx            server component: loads jobs from Postgres
     JobBoard.tsx        client component (Material UI): search, filters, status buttons, archive
     employerColor.ts    per-employer chip colour (stable hue per source)
+    RouteMap.tsx        Leaflet map of the drive (lazy: only cards on screen)
+    polyline.ts         decodes the stored route polyline into lat/lng pairs
     theme.ts            MUI theme (Roboto, flat buttons)
     Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)
     api/jobs/           GET active + archive
     api/jobs/[id]/      PATCH status, DELETE an addressed not-applicable row
-    api/map/[id]/       GET a stored route card (image/png, immutable)
     api/suppressed/     GET jobs already applied to (consumed by the Pi)
   lib/db.ts             Postgres pool, schema bootstrap, stable job ids
   README.md             app-level setup and endpoint reference
@@ -119,15 +122,13 @@ docs/
 ```
 JOB_BOARD_URL=https://pop-health-jobs.vercel.app
 JOB_BOARD_TOKEN=<same value as INGEST_TOKEN>
-GEOAPIFY_KEY=<geoapify key>         # geocoding + drive time + the map image
-ORS_KEY=<openrouteservice key>      # optional: used for the drive time instead
+ORS_KEY=<openrouteservice key>      # geocoding, snapping and the drive time
 ```
 
 The board credentials are optional — without them the watcher still scrapes and alerts, it just
 doesn't publish to the dashboard. The map key is optional too: without it jobs sync normally, they
-just have no route card. Geoapify alone is enough (free tier: 3,000 credits/day; our usage is a few
-per week). `ORS_KEY` is only a fallback for the routing step, since ORS returns the route geometry
-and drive time in one call; set it and it takes precedence.
+just have no route card. One key covers everything (free tier: 2,000 directions + 1,000 geocodes a
+day; our usage is a few per week, and only for *new* postings).
 
 ---
 
