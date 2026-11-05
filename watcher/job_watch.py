@@ -83,7 +83,36 @@ ORIGIN = {
 ORS_KEY = os.environ.get("ORS_KEY", "") or os.environ.get("OPENROUTESERVICE_KEY", "")
 
 # Locations like "Southeastern PA" are source defaults, not real places.
-_GEOCODABLE = re.compile(r",\s*(?:PA|NJ|DE|MD|NY|WV|VA)\s*$", re.I)
+_GEOCODABLE = re.compile(
+    r",\s*(?:PA|NJ|DE|MD|NY|WV|VA)(?:\s+\d{5}(?:-\d{4})?)?\s*$", re.I)
+_REGION_WORD = re.compile(
+    r"\b(?:Southeastern|Southwestern|Northeastern|Northwestern|Central|Statewide|"
+    r"Various|Multiple|Remote|Hybrid)\b", re.I)
+_STATE_ABBR = {
+    "pennsylvania": "PA", "new jersey": "NJ", "delaware": "DE", "maryland": "MD",
+    "new york": "NY", "west virginia": "WV", "virginia": "VA",
+}
+
+
+def normalize_location(loc) -> str:
+    """Tidy the shapes the sources use, so one test can tell a city from a region.
+
+    Boards publish the same place as "West Chester, PA", "West Chester, PA, United States"
+    and "Wilmington, Delaware"; all three have to reach the geocoder as "City, ST".
+    """
+    s = (loc or "").strip()
+    s = re.sub(r",?\s*(?:United States|USA|US)\s*$", "", s, flags=re.I)
+    parts = s.rsplit(",", 1)
+    if len(parts) == 2:
+        abbr = _STATE_ABBR.get(parts[1].strip().lower())
+        if abbr:
+            s = "%s, %s" % (parts[0].strip(), abbr)
+    return s.strip()
+
+
+def geocodable(loc: str) -> bool:
+    """A city we can route to: state-qualified, and not a region standing in for one."""
+    return bool(_GEOCODABLE.search(loc)) and not _REGION_WORD.search(loc)
 
 # Set by the provider helpers so --check-maps can say why a step failed, not just that it did.
 MAP_ERROR = {"geocode": "", "route": ""}
@@ -1577,6 +1606,24 @@ def selftest() -> int:
         ("settled retry", _map_settled({"err": "HTTP 401 Unauthorized"}) is False),
     ]
     mcases.extend([(n, ok, ok) for n, ok in settled])
+
+    # Real location strings off the board that used to be rejected as un-geocodable.
+    lc = [
+        ("West Chester, PA, United States", "West Chester, PA", True),
+        ("Philadelphia, PA, United States", "Philadelphia, PA", True),
+        ("Wilmington, Delaware", "Wilmington, DE", True),
+        ("Bala Cynwyd, PA, United States", "Bala Cynwyd, PA", True),
+        ("York, PA 17403", "York, PA 17403", True),
+        ("Lancaster, PA", "Lancaster, PA", True),
+        ("Southeastern PA", "Southeastern PA", False),
+        ("Southeastern, PA", "Southeastern, PA", False),
+        ("Remote", "Remote", False),
+        ("", "", False),
+    ]
+    for raw, want_norm, want_ok in lc:
+        norm = normalize_location(raw)
+        mcases.append(("loc %r" % raw[:22], norm == want_norm and geocodable(norm) == want_ok,
+                       (norm, geocodable(norm))))
     mfails = 0
     for name, ok, got in mcases:
         if not ok:
@@ -1791,10 +1838,10 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
         rec = done.get(key) or {}
         if _map_settled(rec):
             continue
-        loc = (job.get("location") or "").strip()
-        if not _GEOCODABLE.search(loc):
-            # "Southeastern PA" and friends cannot be geocoded; leave the card map-less.
-            done[key] = {"skipped": "no city"}
+        loc = normalize_location(job.get("location"))
+        if not geocodable(loc):
+            # "Southeastern PA" and friends cannot be geocoded. Nothing is recorded, so a card
+            # that becomes routable later (a better location) is picked up on the next run.
             continue
         try:
             coords = geo.get(loc)
@@ -1805,7 +1852,7 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                     if MAP_ERROR["geocode"]:
                         # The provider refused us, so this says nothing about the city.
                         raise RuntimeError(MAP_ERROR["geocode"])
-                    done[key] = {"skipped": "not found"}
+                    done[key] = {"skipped": "not found", "loc": loc}
                     continue
                 geo[loc] = list(coords)
             route = route_summary(coords[0], coords[1])
