@@ -1,7 +1,8 @@
 # pop-health-jobs
 
-A job-hunting system for a population-health graduate (BS, Lehigh) covering two live corridors —
-**West Chester ⇄ Wilmington** (the home/work commute) and **York / Lancaster / Harrisburg**.
+A job-hunting system for a population-health graduate (BS, Lehigh) covering two job clusters, each
+one a **50 minute drive**: **York** (pinned at Country Club of York) and **West Chester** (pinned at
+Marshallton, PA). Anything further than 50 minutes from either pin never reaches the board.
 
 Two parts that work together:
 
@@ -33,12 +34,13 @@ vez (Pi)                              Vercel                       Postgres (Neo
            (skips jobs already applied to)
 ```
 
-Each card also carries a **route card** — the drive from the Country Club of York, drawn over
-OpenStreetMap tiles, with the time and distance. The Pi resolves the route once at ingest and
-stores the encoded polyline (~2 KB) in Postgres, so the dashboard makes no routing requests:
-Leaflet draws the line in the browser from data already in the page, and only for cards that are
-actually on screen. Stored minutes are corrected by 0.82, because the OSM-based router runs ~20 %
-above Google Maps on these corridors (measurements in [watcher/README.md](watcher/README.md)).
+Each card also carries a **route card** — the drive from the nearer of the two cluster pins
+(Country Club of York, or Marshallton for West Chester), drawn over OpenStreetMap tiles with the
+time and distance and labelled with the cluster name rather than the pin. The Pi resolves the route
+once per city and stores the encoded polyline (~2 KB) in Postgres, so the dashboard makes no
+routing requests: Leaflet draws the line in the browser from data already in the page, and only for
+cards that are on screen. Stored minutes are corrected by 0.82, because the OSM-based router runs
+~20 % above Google Maps on these routes (measurements in [watcher/README.md](watcher/README.md)).
 
 **No LLM runs in the pipeline.** Hermes cron is only a scheduler: both jobs use `--no-agent`,
 so the script's stdout *is* the Telegram message and empty stdout sends nothing. Relevance is a
@@ -169,3 +171,4 @@ ssh vincent@vez '~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3 
 
 Run `--selftest` after **any** change to the filter rules — it has 95 cases covering title
 matching, geography, licensure screens, and the parsers.
+

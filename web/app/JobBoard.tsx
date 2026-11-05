@@ -744,9 +744,9 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         )}
 
         <Typography variant="caption" component="p" color="text.secondary">
-          Built from the job_watch.py scan. Matches are filtered to population-health,
-          care-coordination, and community-health roles in the three areas, and screened for
-          licensure requirements. Applied jobs stay in the archive. A Not-for-me row is a fix
+          Built from the job_watch.py scan. Matches are population-health, care-coordination and
+          community-health roles within a 50 minute drive of York or West Chester, screened for
+          licensure and seniority. Applied jobs stay in the archive. A Not-for-me row is a fix
           request: the reason is what the scanner gets corrected for, and once it is, that row is
           deleted from the database rather than kept.
         </Typography>

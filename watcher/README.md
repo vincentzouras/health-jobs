@@ -67,16 +67,27 @@ $PY job_watch.py --check-origin      # re-geocode the pinned start point and rep
 $PY job_watch.py --check-maps        # prove ORS_KEY end to end (geocode, snap, route)
 ```
 
-## Geography
+## Geography: two clusters, 50 minutes each
 
-Two live corridors, both active:
+The rule is distance, not a city list:
 
-- **West Chester ⇄ Wilmington** — the home/work commute along US-202 and I-95, plus the
-  Downingtown / Exton / Malvern / King of Prussia ring and the Philadelphia edge.
-- **York** — plus Hanover, Lancaster, Harrisburg, Hershey, Camp Hill and Carlisle.
+| Cluster | Pin | Label on the card |
+|---|---|---|
+| York | Country Club of York, 39.9276, −76.7452 | "from York" |
+| West Chester | Marshallton, West Bradford, PA, 39.9487, −75.6972 | "from West Chester" |
 
-Kent/Sussex County DE (Dover, Smyrna, Milford) is rejected: it is another 60–90 min *past*
-Wilmington, not on the way to it. `FAR_DE` keys off the state suffix so Dover, PA stays in.
+A posting is on the board only if it is **within `CLUSTER_MAX_MINUTES` (50) of one of those two
+pins**, measured as the calibrated drive time from the *nearer* pin. The card shows the cluster
+name, never the pin. Nothing outside that boundary reaches the board, the alert or the archive.
+
+Both pins are hard-coded rather than geocoded per run, so drive times stay comparable;
+`--check-origin` re-geocodes each address and fails if a pin has drifted more than 500 m.
+`Marshallton, PA` on its own geocodes to Schuylkill County, so the West Bradford village is pinned
+explicitly.
+
+Between them: West Chester and Downingtown are ~9 min from the West Chester pin, Wilmington ~36,
+Lancaster 43 from York, and Philadelphia ~60 from either — which is why Philadelphia postings,
+present in the sources, never appear.
 
 ## Location: a default is a guess, the posting wins
 
@@ -90,33 +101,33 @@ shown as York, PA.
 So for any match whose city came from a default, the detail page is read and `classify()` is run
 again on the real city. The verified city is stored in `state.locations` and applied before
 `classify()` on every later run, and the check runs *before* the dashboard push, so a wrong city
-never reaches the board. A real city that is out of corridor drops the posting and records
-`location_rejected`.
+never reaches the board. Once the real city is known, `resolve_route()` decides whether it is
+within 50 minutes; if it is not, the posting is dropped and recorded as `location_rejected`.
 
 `--backfill-location` re-reads the real city for postings recorded before this existed and lists
-anything that turns out to be out of corridor.
+anything that turns out to be outside the boundary.
 
 A derived city is judged differently from a card's city: `classify(..., derived=True)` accepts any
-PA/DE town that is not known to be out of area, because the curated city list can never cover every
-township a health system posts in (Chester County posts in Westtown, York County in Dillsburg, and
-both were being dropped as "not an allowed city"). The employer's footprint bounds the risk, the
-real city is printed on the card, and anything wrong goes through the normal not-applicable path.
+PA/DE town, because the curated city list can never cover every township a health system posts in
+(Chester County posts in Westtown, York County in Dillsburg). Distance decides afterwards, so the
+footprint question is answered by the route rather than by a list.
 
 ## Route cards (map + drive time)
 
-Every match gets the drive from **Country Club of York, 1400 Country Club Rd, York, PA 17403**
-(pinned at 39.9276, -76.7452). The route is resolved **once**, at ingest, and the encoded polyline
-(~2 KB) is stored by the dashboard — viewing the board makes no routing call at all, and the map
-is drawn in the browser over OpenStreetMap tiles.
+Every match gets the drive from **whichever cluster pin is nearer**, and the card says "from York"
+or "from West Chester". The route is resolved **once per city** (not per posting), at ingest, and
+the encoded polyline (~2 KB) is stored by the dashboard — viewing the board makes no routing call
+at all, and the map is drawn in the browser over OpenStreetMap tiles.
 
 One free key, in `~/.hermes/.env` and never in the browser:
 
 | Var | Service | Free tier | Used for |
 |---|---|---|---|
-| `ORS_KEY` | openrouteservice | 2,000 directions + 1,000 geocodes/day | city → coordinates, snap to road, drive time/distance, route geometry |
+| `ORS_KEY` | openrouteservice | small daily quota (we spent a day's worth during development) | city → coordinates, snap to road, drive time/distance, route geometry |
 
-Our volume is ~3 calls per *new* posting, so a few per week. Without the key the feature is
-simply absent: jobs still sync and show, they just have no map.
+Because the cache is per city, a normal run costs nothing: only a *new* town needs a route. The
+whole board re-resolving is ~30 calls. Without the key the feature is absent: jobs still sync and
+show, they just have no map.
 
 - Geocodes are cached in `state.geo`, resolved routes in `state.maps_done`, so nothing is done twice.
 - `normalize_location()` tidies what the boards publish (`"West Chester, PA, United States"`,
@@ -165,9 +176,9 @@ Four gates, in order:
    shelter, justice) that were flooding in from PHMC.
 3. **URL doesn't encode a license the title hides** — `rn-care-coordinator-per-diem` was slipping
    through as "Care Coordinator, Per Diem".
-4. **Location is in one of the two corridors** — city allow-list with word-boundary matching (so
-   "District Of **Columbia**" doesn't match "Columbia, PA"), plus a ~45-state blocklist. Unknown
-   location is dropped, never guessed. Kent/Sussex DE is rejected separately (see Geography).
+4. **Within 50 minutes of a cluster pin** — the run routes the posting's city from the nearer of
+   the two pins and drops it if that drive is longer. Unknown or regional locations are dropped,
+   never guessed: if it cannot be routed, it cannot be shown to be in range.
 
 For *new* matches only, it then opens the posting and rejects on hard requirements: "must have RN
 license", "master's required", "LCSW", "position filled". This exists because Melmark's $89,440

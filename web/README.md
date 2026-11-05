@@ -1,7 +1,7 @@
 # Population Health Jobs
 
 Vercel app fed by the `job_watch.py` cron on `vez`. Shows population-health roles in the
-Downingtown/Wilmington and York corridors, lets you mark each one **Applied** or
+York and West Chester (each a 50 minute radius) lets you mark each one **Applied** or
 **Not for me** (with an optional note on why), and keeps everything in an archive instead of
 deleting it.
 
@@ -128,3 +128,4 @@ The notes exist to feed the scraper: `job_watch.py`'s title/location/description
 tuned by hand, so reading back what was actually rejected is how the filter terms get a
 correction instead of a guess. Add the recurring reasons to `POSITIVE` / `NEGATIVE` /
 `URL_REJECT` / `DETAIL_REJECT`, run `--selftest`, then purge the rows they cover.
+

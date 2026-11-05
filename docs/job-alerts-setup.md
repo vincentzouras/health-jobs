@@ -91,17 +91,14 @@ is fixed regex, exercised by `--selftest`.
    Advisor" were reaching a board meant for a first job out of a BS.
 3. **URL must not encode a license** the title hides — `rn-care-coordinator-per-diem` was
    slipping through as "Care Coordinator, Per Diem".
-4. **Location must be in one corridor.** City allow-list, word-boundary matched so
-   "District Of **Columbia**" no longer matches "Columbia, PA" and "Dorchester" no longer
-   matches "Chester, PA". A ~45-state blocklist rejects anything outside PA/DE.
-   **Unknown location = dropped**, never guessed — except for seven sources that publish no
-   city on the card (Main Line, WellSpan, Tower, PHMC, and the three county GovernmentJobs
-   boards), which carry a `default_location` **as a stand-in only**: the detail page is read and
-   `classify()` re-run on the real city before the posting reaches the board (see below).
-   **Kent/Sussex County DE is out**: Dover, Smyrna and Milford are another 60–90 min past
-   Wilmington rather than on the commute to it. The check keys off the state, so "Dover, PA"
-   (York County) still passes. The reachable map is West Chester ⇄ Wilmington along US-202/I-95,
-   plus the York / Lancaster / Harrisburg corridor.
+4. **Location must be within 50 minutes of a cluster pin.** The two pins are Country Club of York
+   and Marshallton, PA (labelled "West Chester"). The run routes the posting's city from the
+   nearer pin and drops it if that drive is longer than `CLUSTER_MAX_MINUTES`; the same pin decides
+   which cluster the card belongs to. **Unknown location = dropped**, never guessed — if it cannot
+   be routed it cannot be shown to be in range. Seven sources publish no city on the card (Main
+   Line, WellSpan, Tower, PHMC, and the three county GovernmentJobs boards), so they carry a
+   `default_location` **as a stand-in only**: the detail page is read and the real city judged
+   before the posting reaches the board (see below).
 5. **Description screen** (`detail_reject`) runs on *new* matches only: rejects
    "must have RN license", "master's required", "LCSW", "position filled", etc. This exists
    because Melmark's $89,440 "Health Care Coordinator" looked perfect and required a PA RN.
@@ -133,7 +130,7 @@ that is done the row is deleted from Postgres (`DELETE /api/jobs/:id`, `applied`
 deletable). So the archive doubles as the queue of everything that slipped through and still
 needs a filter change.
 
-Every card also shows a small **route card**: the drive from Country Club of York with the time
+Every card also shows a small **route card**: the drive from the nearer cluster pin with the time
 and distance, colour-coded by commute length. The Pi resolves it once at ingest and stores the
 encoded polyline in Postgres, so the page makes no routing call — Leaflet draws the line over
 OpenStreetMap tiles from data already in the page. Clicking it opens a zoomable version with a
@@ -259,7 +256,7 @@ flooding you on the next run.
   Treat alerts as "worth a look," not "definitely eligible."
 - **Tower / Main Line / WellSpan cards omit the city**, so they use a `default_location`. That
   default is no longer trusted: the detail page's real city is read for every new match and
-  stored in `state.locations`, and a city outside the corridor drops the posting. This caught
+  stored in `state.locations`, and a city more than 50 minutes from either pin drops the posting. This caught
   a WellSpan "Social Service Coordinator" advertised as York but located at Chambersburg
   Hospital. Run `--backfill-location` once after pulling this to correct postings recorded
   before the check existed.
@@ -267,3 +264,4 @@ flooding you on the next run.
   still empty and everything drops as "unknown location".
 - **~13 minutes per run** — full-board pagination (including all ~78 Chester County rows) plus
   a description fetch per new match. Verified the scheduler tolerates it (real run: 711s).
+
