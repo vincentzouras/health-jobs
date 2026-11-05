@@ -21,6 +21,7 @@ import {
 } from '@mui/material';
 import type { Job, Status } from '@/lib/db';
 import { employerColor, type EmployerColor } from './employerColor';
+import RouteMap from './RouteMap';
 
 interface ApiPayload {
   active: Job[];
@@ -117,8 +118,8 @@ function driveColor(min: number | null): 'success' | 'warning' | 'error' | 'defa
 }
 
 /**
- * The stored route card for one job: a PNG the Pi rendered once at ingest, plus the drive
- * time it was rendered for. Clicking opens it larger — nothing here calls a map API.
+ * The route card for one job: the drive from the pinned origin, drawn in the browser from the
+ * polyline the Pi resolved at ingest. No map API is called when the board is viewed.
  */
 function RouteCard({
   job,
@@ -128,63 +129,53 @@ function RouteCard({
   origin: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  if (!job.hasMap) return null;
+  if (!job.hasMap || !job.mapGeometry) return null;
 
-  const src = `/api/map/${job.id}`;
   const drive = fmtDrive(job.driveMin);
   const miles = job.driveMi === null ? '' : `${Math.round(job.driveMi)} mi`;
-  const from = origin ? `from ${origin}` : 'from the start point';
+  const from = origin ?? job.mapOrigin;
+  const fromLabel = from ? `from ${from}` : 'from the start point';
+  const destination = job.location ?? job.title;
   const googleMaps = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-    origin ?? '',
-  )}&destination=${encodeURIComponent(job.location ?? job.title)}&travelmode=driving`;
-  const alt = `Drive ${from} to ${job.location ?? job.title}`;
+    from ?? '',
+  )}&destination=${encodeURIComponent(destination)}&travelmode=driving`;
 
   return (
-    <>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mt: 1.5, alignItems: 'flex-start' }}>
-        <Box
-          component="img"
-          src={src}
-          alt={alt}
-          loading="lazy"
-          width={200}
-          height={100}
-          onClick={() => setOpen(true)}
-          sx={{
-            display: 'block',
-            width: 200,
-            height: 100,
-            flexShrink: 0,
-            objectFit: 'cover',
-            borderRadius: 1,
-            border: 1,
-            borderColor: 'divider',
-            cursor: 'zoom-in',
-          }}
+    <Stack spacing={1} sx={{ mt: 1.5 }}>
+      <RouteMap
+        geometry={job.mapGeometry}
+        originLabel={from}
+        destination={destination}
+        height={140}
+      />
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        sx={{ flexWrap: 'wrap', alignItems: 'center' }}
+      >
+        <Chip
+          size="small"
+          color={driveColor(job.driveMin)}
+          variant="outlined"
+          label={[drive, miles].filter(Boolean).join(' · ')}
         />
-        <Box sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
-            <Chip
-              size="small"
-              color={driveColor(job.driveMin)}
-              variant="outlined"
-              label={[drive, miles].filter(Boolean).join(' · ')}
-            />
-          </Stack>
-          <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
-            {from}
-          </Typography>
-          <Link
-            href={googleMaps}
-            target="_blank"
-            rel="noopener noreferrer"
-            variant="caption"
-            underline="hover"
-            sx={{ display: 'inline-block', mt: 0.5 }}
-          >
-            Open in Google Maps ↗
-          </Link>
-        </Box>
+        <Typography variant="caption" color="text.secondary">
+          {fromLabel}
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        <Link
+          href={googleMaps}
+          target="_blank"
+          rel="noopener noreferrer"
+          variant="caption"
+          underline="hover"
+        >
+          Directions ↗
+        </Link>
+        <Button size="small" onClick={() => setOpen(true)} sx={{ minWidth: 0 }}>
+          Larger
+        </Button>
       </Stack>
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="md" fullWidth>
@@ -193,17 +184,18 @@ function RouteCard({
             {job.title}
           </Typography>
           <Typography variant="body2" color="text.secondary" gutterBottom>
-            {[drive, miles, from].filter(Boolean).join(' · ')}
+            {[drive, miles, fromLabel].filter(Boolean).join(' · ')}
           </Typography>
-          <Box
-            component="img"
-            src={src}
-            alt={alt}
-            sx={{ display: 'block', width: '100%', height: 'auto', borderRadius: 1, border: 1, borderColor: 'divider' }}
+          <RouteMap
+            geometry={job.mapGeometry}
+            originLabel={from}
+            destination={destination}
+            height={420}
+            interactive
           />
           <Stack direction="row" spacing={1} sx={{ mt: 1.5, alignItems: 'center' }}>
             <Typography variant="caption" color="text.secondary">
-              © OpenStreetMap contributors · Geoapify · routes by openrouteservice
+              © OpenStreetMap contributors · route by openrouteservice
             </Typography>
             <Box sx={{ flex: 1 }} />
             <Button size="small" href={googleMaps} target="_blank" rel="noopener noreferrer">
@@ -212,7 +204,7 @@ function RouteCard({
           </Stack>
         </DialogContent>
       </Dialog>
-    </>
+    </Stack>
   );
 }
 

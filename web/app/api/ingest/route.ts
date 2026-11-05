@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ensureSchema, jobId, MAX_MAP_BYTES, pool } from '@/lib/db';
+import { ensureSchema, jobId, MAX_GEOMETRY, pool } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,14 +13,14 @@ interface IncomingJob {
   posted?: string | null;
 }
 
-/** A route card: the rendered map plus the drive time it was rendered for. */
+/** A route card: the drive from the pinned origin, as a polyline plus its time and distance. */
 interface IncomingMap {
   employer: string;
   job_id: string;
   drive_min?: number | null;
   drive_mi?: number | null;
   origin_label?: string | null;
-  png: string; // base64
+  geometry: string;
 }
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -79,35 +79,29 @@ export async function POST(req: Request) {
     }
 
     for (const m of maps) {
-      if (!m || !m.employer || !m.job_id || typeof m.png !== 'string') continue;
+      if (!m || !m.employer || !m.job_id || typeof m.geometry !== 'string') continue;
       const id = jobId(m.employer, String(m.job_id));
-      let png: Buffer;
-      try {
-        png = Buffer.from(m.png, 'base64');
-      } catch {
-        mapsSkipped += 1;
-        continue;
-      }
+      const geometry = m.geometry.trim();
       // A route card is an enhancement: never let a bad one fail the whole ingest.
-      if (png.length === 0 || png.length > MAX_MAP_BYTES) {
+      if (geometry.length === 0 || geometry.length > MAX_GEOMETRY) {
         mapsSkipped += 1;
         continue;
       }
       const { rowCount } = await client.query(
         // Only for a job that still exists: the board purges addressed rows, and a map for a
         // gone job must be skipped rather than violating the foreign key and failing the batch.
-        `INSERT INTO job_maps (id, png, drive_min, drive_mi, origin_label, generated_at)
+        `INSERT INTO job_maps (id, geometry, drive_min, drive_mi, origin_label, generated_at)
          SELECT $1, $2, $3, $4, $5, now()
           WHERE EXISTS (SELECT 1 FROM jobs WHERE id = $1)
          ON CONFLICT (id) DO UPDATE
-           SET png          = EXCLUDED.png,
+           SET geometry     = EXCLUDED.geometry,
                drive_min    = EXCLUDED.drive_min,
                drive_mi     = EXCLUDED.drive_mi,
                origin_label = EXCLUDED.origin_label,
                generated_at = now()`,
         [
           id,
-          png,
+          geometry,
           Number.isFinite(Number(m.drive_min)) ? Math.round(Number(m.drive_min)) : null,
           Number.isFinite(Number(m.drive_mi)) ? Number(m.drive_mi) : null,
           typeof m.origin_label === 'string' ? m.origin_label.slice(0, 80) : null,

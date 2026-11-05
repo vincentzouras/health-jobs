@@ -16,17 +16,20 @@ export interface Job {
   firstSeen: string;
   lastSeen: string;
   statusChangedAt: string | null;
-  /** Present when the Pi generated a route card for this posting. */
+  /** Present when the Pi resolved a route from the pinned origin to this posting. */
   hasMap: boolean;
   driveMin: number | null;
   driveMi: number | null;
+  /** Encoded polyline (precision 5) of the drive; the browser decodes it to draw the map. */
+  mapGeometry: string | null;
+  mapOrigin: string | null;
 }
 
 /** Longest dismissal note we keep; anything past this is truncated. */
 export const MAX_REASON = 400;
 
-/** Guard on the stored route image, so one runaway upload cannot fill the DB. */
-export const MAX_MAP_BYTES = 300 * 1024;
+/** A route is ~1–8 KB of polyline; anything this big is not a route. */
+export const MAX_GEOMETRY = 20_000;
 
 export function rowToJob(r: Record<string, unknown>): Job {
   return {
@@ -41,9 +44,11 @@ export function rowToJob(r: Record<string, unknown>): Job {
     firstSeen: new Date(r.first_seen as string).toISOString(),
     lastSeen: new Date(r.last_seen as string).toISOString(),
     statusChangedAt: r.status_changed_at ? new Date(r.status_changed_at as string).toISOString() : null,
-    hasMap: Boolean(r.has_map),
+    hasMap: Boolean(r.map_geometry),
     driveMin: r.drive_min === null || r.drive_min === undefined ? null : Number(r.drive_min),
     driveMi: r.drive_mi === null || r.drive_mi === undefined ? null : Number(r.drive_mi),
+    mapGeometry: (r.map_geometry as string | null) ?? null,
+    mapOrigin: (r.map_origin as string | null) ?? null,
   };
 }
 
@@ -53,9 +58,10 @@ export function rowToJob(r: Record<string, unknown>): Job {
  */
 export const JOB_COLUMNS = `id, employer, title, location, url, status, status_reason,
               posted::text AS posted, first_seen, last_seen, status_changed_at,
-              (SELECT m.drive_min FROM job_maps m WHERE m.id = jobs.id) AS drive_min,
-              (SELECT m.drive_mi  FROM job_maps m WHERE m.id = jobs.id) AS drive_mi,
-              EXISTS (SELECT 1 FROM job_maps m WHERE m.id = jobs.id) AS has_map`;
+              (SELECT m.drive_min  FROM job_maps m WHERE m.id = jobs.id) AS drive_min,
+              (SELECT m.drive_mi   FROM job_maps m WHERE m.id = jobs.id) AS drive_mi,
+              (SELECT m.geometry   FROM job_maps m WHERE m.id = jobs.id) AS map_geometry,
+              (SELECT m.origin_label FROM job_maps m WHERE m.id = jobs.id) AS map_origin`;
 
 const CONN = process.env.POSTGRES_URL || process.env.DATABASE_URL || '';
 
@@ -108,18 +114,27 @@ export async function ensureSchema(): Promise<void> {
           value TEXT
         );
       `);
-      // Route cards: a map image plus the drive time, generated once on the Pi. Stored here
-      // rather than in a blob service so the dashboard serves them from its own origin.
+      // Route cards: the drive from the pinned origin, as an encoded polyline the browser
+      // draws over OpenStreetMap tiles. No image is stored, so a card costs ~2 KB not ~200 KB.
       await pool().query(`
         CREATE TABLE IF NOT EXISTS job_maps (
           id           TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
-          png          BYTEA NOT NULL,
+          geometry     TEXT,
           drive_min    INTEGER,
           drive_mi     NUMERIC(6,1),
           origin_label TEXT,
           generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
+      // The first cut stored a rendered PNG instead; that shape is not compatible and the rows
+      // carried nothing worth keeping, so swap the column out rather than leave a dead one.
+      const legacy = await pool().query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'job_maps' AND column_name = 'png'`);
+      if (legacy.rowCount) {
+        await pool().query(`ALTER TABLE job_maps ADD COLUMN IF NOT EXISTS geometry TEXT;`);
+        await pool().query(`ALTER TABLE job_maps DROP COLUMN IF EXISTS png;`);
+      }
     })();
   }
   return global.__jobSchema;
