@@ -77,6 +77,8 @@ export default function RouteMap({
         keyboard: false,
         zoomControl: interactive,
         attributionControl: true,
+        // Matches the tile layer: without this a very short drive fits at a zoom with no tiles.
+        maxZoom: 18,
       });
       mapRef.current = map;
 
