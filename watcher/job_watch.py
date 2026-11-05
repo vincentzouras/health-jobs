@@ -1946,6 +1946,8 @@ def _err_text(e) -> str:
 # The free openrouteservice plan allows 40 requests a minute, and a backfill of the whole board
 # fires two per posting; without this it throttles and the cards silently come back empty.
 ORS_MIN_INTERVAL = 1.5
+# The OSRM demo server asks callers to stay around one request a second.
+OSRM_MIN_INTERVAL = 1.2
 _last_ors_call = [0.0]
 
 
@@ -2082,6 +2084,50 @@ def snap_point(lat: float, lon: float) -> tuple:
     return lat, lon
 
 
+# Keyless fallback for when openrouteservice is out of quota. The OSRM demo server is for light
+# use, which this is (~15 calls a day, one per new city), and it returns the same precision-5
+# polyline, so nothing downstream cares which engine produced a route.
+OSRM_URL = "https://router.project-osrm.org/route/v1/driving"
+
+
+def _osrm_json(path: str):
+    gap = time.time() - _last_ors_call[0]
+    if gap < OSRM_MIN_INTERVAL:
+        time.sleep(OSRM_MIN_INTERVAL - gap)
+    _last_ors_call[0] = time.time()
+    req = urllib.request.Request(path, headers={
+        "User-Agent": "pop-health-jobs/1.0 (personal job board)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def route_via_osrm(cluster: str, dest_lat: float, dest_lon: float) -> dict:
+    """Same shape as route_summary(), from a service with no key and no daily cap."""
+    origin = ORIGINS[cluster]
+    url = ("%s/%.5f,%.5f;%.5f,%.5f?overview=full&geometries=polyline&alternatives=false&steps=false"
+           % (OSRM_URL, origin["lon"], origin["lat"], dest_lon, dest_lat))
+    data = _osrm_json(url)
+    route = (data.get("routes") or [{}])[0]
+    seconds = float(route.get("duration") or 0)
+    metres = float(route.get("distance") or 0)
+    if not seconds or not route.get("geometry"):
+        raise RuntimeError("osrm returned no route")
+    raw = int(round(seconds / 60))
+    return {
+        "minutes": calibrate(raw),
+        "raw_minutes": raw,
+        "miles": round(metres / 1609.344, 1) if metres else None,
+        "geometry": route["geometry"],
+        "source": "osrm",
+    }
+
+
+def _out_of_quota(text: str) -> bool:
+    return any(t in (text or "") for t in ("Quota", "quota", "429", "403", "Too Many"))
+
+
 def _straight_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle-ish distance, accurate enough to sanity-check a route length."""
     dlat = (lat2 - lat1) * 69.05
@@ -2096,7 +2142,11 @@ def nearest_cluster(lat: float, lon: float) -> str:
 
 
 def route_summary(cluster: str, dest_lat: float, dest_lon: float) -> dict:
-    """Drive from one cluster pin to a destination, plus the route as an encoded polyline."""
+    """Drive from one cluster pin to a destination, plus the route as an encoded polyline.
+
+    openrouteservice first; if it refuses because the day's quota is spent, the keyless OSRM
+    demo answers instead so a run still produces a board. Which engine answered is recorded.
+    """
     origin = ORIGINS[cluster]
     empty = {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
     if not ORS_KEY:
@@ -2118,9 +2168,16 @@ def route_summary(cluster: str, dest_lat: float, dest_lon: float) -> dict:
             "miles": round(metres / 1609.344, 1) if metres else None,
             # openrouteservice encodes at precision 5; the browser decodes it to draw the line.
             "geometry": route.get("geometry") or "",
+            "source": "ors",
         }
     except Exception as e:
         MAP_ERROR["route"] = _err_text(e)
+        if not _out_of_quota(MAP_ERROR["route"]):
+            return empty
+    try:
+        return route_via_osrm(cluster, dest_lat, dest_lon)
+    except Exception as e:
+        MAP_ERROR["route"] = "%s (osrm fallback: %s)" % (MAP_ERROR["route"], _err_text(e))
         return empty
 
 
@@ -2196,6 +2253,7 @@ def resolve_route(loc, st: dict) -> dict:
         "raw": route["raw_minutes"],
         "mi": route["miles"],
         "geometry": route["geometry"],
+        "src": route.get("source") or "ors",
     }
     return routes[loc]
 
