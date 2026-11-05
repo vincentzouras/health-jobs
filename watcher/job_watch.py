@@ -2427,12 +2427,14 @@ def backfill_maps(st, relevant: dict) -> int:
     print("route cards: %d to push, %d dropped (%s)"
           % (len(maps), sum(dropped.values()),
              ", ".join("%s %d" % kv for kv in sorted(dropped.items())) or "none"))
-    if maps:
-        print("dashboard sync: %s" % push_maps(maps, now))
+    # Snapshot first: job_maps has a foreign key onto jobs, so a card for a posting the board
+    # has never seen would be skipped.
     in_range_jobs = {k: v for k, v in relevant.items() if in_range(place_of(v, st))}
     print("board: %d of %d postings inside %d min of a cluster; syncing snapshot"
           % (len(in_range_jobs), len(relevant), CLUSTER_MAX_MINUTES))
     print("dashboard sync: %s" % push_snapshot(in_range_jobs, now, full=True))
+    if maps:
+        print("dashboard sync: %s" % push_maps(maps, now))
     return 0
 
 

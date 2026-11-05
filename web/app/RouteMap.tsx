@@ -8,7 +8,7 @@ import { decodePolyline } from './polyline';
 
 const TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · route by openrouteservice';
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · routes by openrouteservice/OSRM';
 
 /**
  * The drive from the pinned origin to one posting, drawn over OpenStreetMap tiles.
