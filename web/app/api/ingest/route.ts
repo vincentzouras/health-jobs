@@ -94,8 +94,11 @@ export async function POST(req: Request) {
         continue;
       }
       const { rowCount } = await client.query(
+        // Only for a job that still exists: the board purges addressed rows, and a map for a
+        // gone job must be skipped rather than violating the foreign key and failing the batch.
         `INSERT INTO job_maps (id, png, drive_min, drive_mi, origin_label, generated_at)
-         VALUES ($1, $2, $3, $4, $5, now())
+         SELECT $1, $2, $3, $4, $5, now()
+          WHERE EXISTS (SELECT 1 FROM jobs WHERE id = $1)
          ON CONFLICT (id) DO UPDATE
            SET png          = EXCLUDED.png,
                drive_min    = EXCLUDED.drive_min,
@@ -111,6 +114,7 @@ export async function POST(req: Request) {
         ],
       );
       if (rowCount) mapsStored += 1;
+      else mapsSkipped += 1;
     }
 
     await client.query(
