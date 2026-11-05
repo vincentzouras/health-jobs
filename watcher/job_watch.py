@@ -1584,6 +1584,26 @@ def selftest() -> int:
         ("pick empty", _pick_point({"features": []}, "York, PA") is None,
          _pick_point({"features": []}, "York, PA")),
     ]
+    # Shortened street suffixes and hyphenated names are the same place.
+    street = {"features": [{"properties": {
+        "label": "1400 Country Club Road, York, PA, USA", "region": "Pennsylvania",
+        "region_a": "PA", "name": "1400 Country Club Road"},
+        "geometry": {"coordinates": [-76.7425, 39.9300]}}]}
+    mcases.append(("pick street address",
+                   _pick_point(street, "1400 Country Club Rd, York, PA 17403") == (39.93, -76.7425),
+                   _pick_point(street, "1400 Country Club Rd, York, PA 17403")))
+    hyphen = {"features": [{"properties": {
+        "label": "Bala-Cynwyd, PA, USA", "region": "Pennsylvania", "region_a": "PA",
+        "name": "Bala-Cynwyd"}, "geometry": {"coordinates": [-75.2336, 40.0081]}}]}
+    mcases.append(("pick hyphenated",
+                   _pick_point(hyphen, "Bala Cynwyd, PA") == (40.0081, -75.2336),
+                   _pick_point(hyphen, "Bala Cynwyd, PA")))
+    # A same-state decoy must not win just because it shares the first word.
+    decoy = {"features": [{"properties": {
+        "label": "West Goshen, PA, USA", "region": "Pennsylvania", "region_a": "PA",
+        "name": "West Goshen"}, "geometry": {"coordinates": [-75.5700, 39.9700]}}]}
+    mcases.append(("pick rejects decoy", _pick_point(decoy, "West Chester, PA") is None,
+                   _pick_point(decoy, "West Chester, PA")))
     mcases.append(("state of", _state_of("Northeast Philadelphia, PA") == "PA"
                    and _state_of("Wilmington, Delaware") == "DE"
                    and _state_of("York, PA 17403") == "PA"
@@ -1857,26 +1877,41 @@ def _state_of(loc: str) -> str:
     return ""
 
 
+# Street suffix shorthand, so a query and a label that spell it differently still compare.
+_SUFFIX = {
+    "rd": "road", "st": "street", "ave": "avenue", "av": "avenue", "blvd": "boulevard",
+    "dr": "drive", "ln": "lane", "ct": "court", "hwy": "highway", "pkwy": "parkway",
+    "pl": "place", "sq": "square", "ter": "terrace", "cir": "circle", "trl": "trail",
+    "n": "north", "s": "south", "e": "east", "w": "west",
+}
+
+
+def _tokens(text) -> list:
+    """Lower-case word/number tokens, so "Bala-Cynwyd", "Bala Cynwyd" and "Rd"/"Road" compare."""
+    return [_SUFFIX.get(t, t) for t in re.findall(r"[a-z0-9]+", (text or "").lower())]
+
+
 def _pick_point(data: dict, wanted: str):
     """Choose the geocoder hit that actually is the place we asked for.
 
     Pelias happily returns a fuzzy match: asking for "Northeast Philadelphia, PA" with a
     locality-only layer filter produced "Northeast Ithaca, NY" and, once filtered to the USA,
-    a locality 50 miles from York. So a hit has to carry the same state and the same name.
+    a locality 50 miles from York. So a hit must be in the right state and contain every word of
+    the query (after normalising street suffixes) - which still tolerates "1400 Country Club Rd"
+    matching "1400 Country Club Road" but rejects the decoy "West Goshen" for "West Chester".
     """
-    head = (wanted or "").split(",")[0].strip().lower()
+    head = _tokens((wanted or "").split(",")[0])
     state = _state_of(wanted)
     for feat in data.get("features") or []:
         props = feat.get("properties") or {}
         coords = (feat.get("geometry") or {}).get("coordinates") or []
         if len(coords) < 2:
             continue
-        label = (props.get("label") or "").lower()
-        region = ("%s %s" % (props.get("region_a") or "", props.get("region") or "")).lower()
-        name = (props.get("name") or "").lower()
+        region = _tokens("%s %s" % (props.get("region_a") or "", props.get("region") or ""))
         if state and not any(n in region for n in _STATE_NAMES[state]):
             continue
-        if head and head not in label and name not in head:
+        words = set(_tokens(props.get("label")) + _tokens(props.get("name")))
+        if head and not set(head) <= words:
             continue
         return float(coords[1]), float(coords[0])
     return None
