@@ -2095,6 +2095,18 @@ def route_summary(cluster: str, dest_lat: float, dest_lon: float) -> dict:
         return empty
 
 
+def _remember(routes: dict, loc: str, rec: dict) -> dict:
+    """Cache a per-city answer, unless it is a quota/rate refusal that clears on its own.
+
+    A 403 "Quota exceeded" must not be remembered for the retry window below: the moment the
+    daily reset lands, the next run should resolve it, not wait a day.
+    """
+    text = str(rec.get("error") or rec.get("skipped") or "")
+    if not any(t in text for t in ("Quota", "quota", "429", "403", "Too Many")):
+        routes[loc] = rec
+    return rec
+
+
 def resolve_route(loc, st: dict) -> dict:
     """Route a normalized location from its cluster pin, caching the answer per location.
 
@@ -2212,7 +2224,11 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict, dict]:
         if not in_range(place):
             dropped["out of range"] = dropped.get("out of range", 0) + 1
             continue
-        if _map_settled(done.get(key) or {}) and (done[key].get("cluster") == place["cluster"]):
+        rec = done.get(key) or {}
+        # Re-push when the answer changed (a whole cluster switch, a corrected city), not only
+        # for postings that never had a card.
+        if (_map_settled(rec) and rec.get("cluster") == place["cluster"]
+                and rec.get("min") == place["min"]):
             drive[key] = place["min"]
             continue
         out.append({
@@ -2495,8 +2511,10 @@ def main() -> int:
     new_keys = verified
     save_state(st)
 
-    # Route cards for the new matches, so the board shows them with their map already stored.
-    maps, drive_min = build_maps({k: relevant[k] for k in new_keys}, st, now)
+    # Route cards for the whole board, not just the new matches: places are already resolved
+    # (and cached per city), so this pushes a card only where the answer actually changed -
+    # which is exactly what the switch to two clusters needs on the first run.
+    maps, drive_min, _map_dropped = build_maps(relevant, st, now)
     save_state(st)
 
     baseline = (not st.get("baseline_done")) or ("--baseline" in args)
@@ -2519,8 +2537,13 @@ def main() -> int:
                 print("  ⚠️", w)
         return 0
 
-    # `full` only when every source answered: a partial scrape must not retire the whole board.
-    st["web_sync"] = push_snapshot(relevant, now, full=not errors)
+    # `full` only when every source answered AND every city routed: a partial scrape or a
+    # provider outage must not retire the board (an unresolved place looks out of range).
+    place_errors = [k for k, p in places.items() if p.get("error")]
+    st["web_sync"] = push_snapshot(relevant, now, full=(not errors and not place_errors))
+    if place_errors:
+        print("⚠️ %d city/cities could not be routed - nothing retired this run (%s)"
+              % (len(place_errors), places[place_errors[0]].get("error", "")[:60]))
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
@@ -2571,3 +2594,4 @@ if __name__ == "__main__":
     except Exception as e:
         print("⚠️ Job watch crashed: %s" % str(e)[:200])
         sys.exit(1)
+
