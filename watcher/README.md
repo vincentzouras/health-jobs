@@ -62,6 +62,8 @@ $PY job_watch.py --selftest  # 130 filter + parser tests; run after ANY rule cha
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
+$PY job_watch.py --backfill-maps     # render route cards for postings that lack one
+$PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
 ```
 
 ## Geography
@@ -98,6 +100,31 @@ PA/DE town that is not known to be out of area, because the curated city list ca
 township a health system posts in (Chester County posts in Westtown, York County in Dillsburg, and
 both were being dropped as "not an allowed city"). The employer's footprint bounds the risk, the
 real city is printed on the card, and anything wrong goes through the normal not-applicable path.
+
+## Route cards (map + drive time)
+
+Every match gets a small map with the drive from **Country Club of York, 1400 Country Club Rd,
+York, PA 17403** (pinned at 39.9276, -76.7452). The image is rendered **once**, at ingest, and
+stored by the dashboard — viewing the board makes no routing or map calls at all.
+
+Two free keys, both in `~/.hermes/.env` and never in the browser:
+
+| Var | Service | Free tier | Used for |
+|---|---|---|---|
+| `ORS_KEY` | openrouteservice | 2,000 directions + 1,000 geocodes/day | drive time, distance, route geometry |
+| `GEOAPIFY_KEY` | Geoapify Static Maps | 3,000 credits/day | the PNG itself (ORS has no static map) |
+
+Our volume is ~3 calls per *new* posting, so a few per week. Without the keys the feature is
+simply absent: jobs still sync and show, they just have no map.
+
+- Geocodes are cached in `state.geo`, renders in `state.maps_done`, so nothing is done twice.
+- `_GEOCODABLE` skips synthetic locations (`Southeastern PA`) that cannot resolve.
+- `--backfill-maps` renders for the whole board from state (no re-scrape needed).
+- `--check-origin` re-geocodes the address and fails if the pinned point has drifted >500 m.
+- Times are free-flow, not live traffic.
+
+Attribution is required by both services and appears under the map:
+"© OpenStreetMap contributors · Geoapify · routes by openrouteservice".
 
 ## What counts as a match
 

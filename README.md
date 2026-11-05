@@ -23,14 +23,19 @@ vez (Pi)                              Vercel                       Postgres (Neo
 08:00  watcher/job_watch.py
   ├─ Camofox browser ──▶ 11 job boards
   ├─ relevance filter (regex, deterministic)
+  ├─ route card per new match ──▶ ORS (drive time) + Geoapify (map PNG)
   ├─ Telegram alert ──────────────▶ phone
-  └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs
-       (incl. scanner hash)                   ▲               (status: new/
+  └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs + job_maps
+       (jobs, scanner hash, maps)             ▲               (status: new/
                                               │                applied/ignored)
                                   /api/jobs   │
        └── GET /api/suppressed ───────────────┘
            (skips jobs already applied to)
 ```
+
+Each card also carries a **route card** — a map image plus drive time from the Country Club of
+York. It is rendered once on the Pi at ingest and stored in Postgres, so the dashboard makes no
+map or routing requests at all: `/api/map/<id>` serves the stored PNG with an immutable cache.
 
 **No LLM runs in the pipeline.** Hermes cron is only a scheduler: both jobs use `--no-agent`,
 so the script's stdout *is* the Telegram message and empty stdout sends nothing. Relevance is a
@@ -85,7 +90,8 @@ web/
     Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)
     api/jobs/           GET active + archive
-    api/jobs/[id]/      PATCH status
+    api/jobs/[id]/      PATCH status, DELETE an addressed not-applicable row
+    api/map/[id]/       GET a stored route card (image/png, immutable)
     api/suppressed/     GET jobs already applied to (consumed by the Pi)
   lib/db.ts             Postgres pool, schema bootstrap, stable job ids
   README.md             app-level setup and endpoint reference
@@ -113,10 +119,14 @@ docs/
 ```
 JOB_BOARD_URL=https://pop-health-jobs.vercel.app
 JOB_BOARD_TOKEN=<same value as INGEST_TOKEN>
+ORS_KEY=<openrouteservice key>      # drive time, distance, route geometry
+GEOAPIFY_KEY=<geoapify key>         # the map image itself
 ```
 
-Both are optional — without them the watcher still scrapes and alerts, it just doesn't publish
-to the dashboard.
+The board credentials are optional — without them the watcher still scrapes and alerts, it just
+doesn't publish to the dashboard. The two map keys are optional too: without them jobs sync
+normally, they just have no route card. Both are free tiers (openrouteservice 2,000 directions/day;
+Geoapify 3,000 static maps/day) and our usage is a few per week.
 
 ---
 

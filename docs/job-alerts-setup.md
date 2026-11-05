@@ -133,6 +133,11 @@ that is done the row is deleted from Postgres (`DELETE /api/jobs/:id`, `applied`
 deletable). So the archive doubles as the queue of everything that slipped through and still
 needs a filter change.
 
+Every card also shows a small **route card**: the drive from Country Club of York with the time
+and distance, colour-coded by commute length. The image is rendered once on the Pi and stored in
+Postgres, so the page loads it from `/api/map/<id>` (immutable, CDN-cached) and never calls a map
+service. Clicking it opens a larger view with a Google Maps directions link.
+
 ```
 vez (Pi)                            Vercel                         Postgres (Neon)
 ────────                            ──────                         ───────────────
@@ -151,6 +156,9 @@ Project: `vincent-zouras-projects/pop-health-jobs`. Source lives in
 [`web/`](../web/), deployed by Vercel on push to `main` with **Root Directory = `web`**.
 Repo: `github.com/vincentzouras/pop-health-jobs`.
 `INGEST_TOKEN` is set in Vercel (production + preview) and in `~/.hermes/.env` on the Pi.
+Route cards need two more Pi-only variables: `ORS_KEY` (openrouteservice) and `GEOAPIFY_KEY`
+(static maps). Both free, neither reaches the browser — the Pi renders each map once and the
+dashboard stores it.
 
 ## What self-heals vs. what alerts you
 
@@ -196,8 +204,7 @@ A 503/502 on any page triggers it and retries.
 
 | Check | Result |
 |---|---|
-| `--selftest` | **130/130 pass** (73 title/location, 8 derived-city, 11 description, 3 Jefferson URL, 4 Penn table-layout, 14 posted-date, 9 location-from-detail) |
-| Baseline | **561 postings -> 55 relevant, 0 errors** |
+| `--selftest` | **130/130 pass** (73 title/location, 8 derived-city, 11 description, 3 Jefferson URL, 4 Penn table-layout, 14 posted-date, 9 location-from-detail) || Baseline | **561 postings -> 55 relevant, 0 errors** |
 | Board population | 55 active rows, **15 with a real posted date**, 40 on the "found" fallback |
 | Per-source coverage | WellSpan 158, Tower 122, Penn 86, PHMC 50, Jefferson 46, ChristianaCare 32, Main Line 21, AmeriHealth 16, Chester 10, Delaware Co 10, Montgomery Co 10 |
 | Silence when nothing new | `bytes=0` |
@@ -220,6 +227,8 @@ $PY ~/.hermes/scripts/job_watch.py --selftest  # run filter tests after ANY rule
 $PY ~/.hermes/scripts/job_watch.py --baseline  # silence everything currently live
 $PY ~/.hermes/scripts/job_watch.py --backfill-posted  # read posted dates for jobs lacking one
 $PY ~/.hermes/scripts/job_watch.py --backfill-location  # replace a guessed city with the real one
+$PY ~/.hermes/scripts/job_watch.py --backfill-maps      # render route cards for postings lacking one
+$PY ~/.hermes/scripts/job_watch.py --check-origin       # re-geocode the pinned start point
 
 cd ~/.hermes/hermes-agent
 ./hermes cron list

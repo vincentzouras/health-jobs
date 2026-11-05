@@ -19,7 +19,9 @@ Exit codes: 0 ok, 1 total source failure (so Hermes surfaces it), 0 otherwise.
 from __future__ import annotations
 
 import json
+import base64
 import hashlib
+import math
 import os
 import random
 import re
@@ -27,6 +29,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -64,6 +67,32 @@ _load_env_file(HOME / ".hermes" / ".env")
 
 WEB_URL = os.environ.get("JOB_BOARD_URL", "https://pop-health-jobs.vercel.app").rstrip("/")
 WEB_TOKEN = os.environ.get("JOB_BOARD_TOKEN", "")
+
+# --------------------------------------------------------------------------
+# Route cards: one map image + drive time per job, rendered ONCE here and stored by the
+# dashboard, so viewing the board costs no routing or map API calls at all.
+#
+# The origin is pinned rather than geocoded on every run: every drive time stays comparable,
+# and `--check-origin` re-geocodes the address to catch a stale pin.
+# --------------------------------------------------------------------------
+ORIGIN = {
+    "label": "Country Club of York",
+    "address": "1400 Country Club Rd, York, PA 17403",
+    "lat": 39.9276,
+    "lon": -76.7452,
+}
+ORS_KEY = os.environ.get("ORS_KEY", "") or os.environ.get("OPENROUTESERVICE_KEY", "")
+GEOAPIFY_KEY = os.environ.get("GEOAPIFY_KEY", "")
+MAP_W, MAP_H = 800, 400
+# Roughly a 20 minute drive; below this the card's "too far to bother" judgement is moot.
+MAP_NEAR_MIN, MAP_FAR_MIN = 30, 60
+
+# Locations like "Southeastern PA" are source defaults, not real places.
+_GEOCODABLE = re.compile(r",\s*(?:PA|NJ|DE|MD|NY|WV|VA)\s*$", re.I)
+
+
+def has_map_keys() -> bool:
+    return bool(ORS_KEY and GEOAPIFY_KEY)
 
 
 def _http_json(method: str, url: str, body=None, headers=None, timeout: int = 30):
@@ -1041,17 +1070,19 @@ def parse_posted(hint, today=None):
     return None
 
 
-def posted_from_body(text: str):
+def posted_from_body(text: str, today=None):
     """Pull a posting date out of a job detail page.
 
     Only some ATSs publish one (Workday's "posted on Posted 2 Days Ago", UltiPro's
     "Posting Details Posted: October 14, 2026"). Penn, Tower and ChristianaCare do not,
     so a missing date is a normal outcome, not a parse failure.
+
+    `today` is injectable so the selftest does not depend on the wall clock.
     """
     if not text:
         return None
     m = POSTED_BODY_RE.search(text)
-    return parse_posted(m.group(1)) if m else None
+    return parse_posted(m.group(1), today) if m else None
 
 
 # "Chambersburg,PA" / "York, PA" / "Reading, Pennsylvania" — the comma may have no space.
@@ -1462,7 +1493,7 @@ def selftest() -> int:
     print("\n--- posted date from detail page ---")
     bfails = 0
     for body, want in bcases:
-        got = posted_from_body(body)
+        got = posted_from_body(body, today)
         ok = got == want
         if not ok:
             bfails += 1
@@ -1603,6 +1634,208 @@ def backfill_location(st) -> int:
     return 0
 
 
+def push_maps(maps: list, run_at: str) -> str:
+    """Upload route cards. Batched: Vercel caps a request body at 4.5 MB."""
+    if not WEB_URL or not WEB_TOKEN:
+        return "skipped (no web credentials)"
+    if not maps:
+        return "skipped (no new maps)"
+    sent = 0
+    for i in range(0, len(maps), 8):
+        chunk = maps[i:i + 8]
+        try:
+            _http_json("POST", WEB_URL + "/api/ingest",
+                       {"run_at": run_at, "maps": chunk},
+                       {"x-ingest-token": WEB_TOKEN}, timeout=90)
+            sent += len(chunk)
+        except Exception as e:
+            return "FAILED after %d map(s): %s" % (sent, str(e)[:120])
+    return "ok (%d map%s)" % (sent, "" if sent == 1 else "s")
+
+
+def geocode(location: str):
+    """(lat, lon) for "City, ST" via OpenRouteService. None when it cannot resolve."""
+    q = urllib.parse.urlencode({
+        "api_key": ORS_KEY,
+        "text": location,
+        "size": 1,
+        "boundary.country": "USA",
+    })
+    req = urllib.request.Request(
+        "https://api.openrouteservice.org/geocode/search?" + q,
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=25) as r:
+        data = json.loads(r.read().decode("utf-8", "replace"))
+    feats = data.get("features") or []
+    if not feats:
+        return None
+    lon, lat = feats[0]["geometry"]["coordinates"][:2]
+    return float(lat), float(lon)
+
+
+def route_summary(dest_lat: float, dest_lon: float) -> dict:
+    """Drive time and distance from the pinned origin, plus the route geometry."""
+    body = json.dumps({
+        "coordinates": [[ORIGIN["lon"], ORIGIN["lat"]], [dest_lon, dest_lat]],
+        "instructions": False,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openrouteservice.org/v2/directions/driving-car",
+        data=body,
+        headers={
+            "Authorization": ORS_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read().decode("utf-8", "replace"))
+    route = (data.get("routes") or [{}])[0]
+    summary = route.get("summary") or {}
+    seconds = float(summary.get("duration") or 0)
+    metres = float(summary.get("distance") or 0)
+    return {
+        "minutes": int(round(seconds / 60)) if seconds else None,
+        "miles": round(metres / 1609.344, 1) if metres else None,
+        "geometry": route.get("geometry") or "",
+    }
+
+
+def static_map_png(dest_lat: float, dest_lon: float, geometry: str = "") -> bytes:
+    """Render the route to a PNG via Geoapify. Falls back to two pins if the line is rejected."""
+    markers = "|".join([
+        "lonlat:%f,%f;color:#1a7f4b;size:large;text:A" % (ORIGIN["lon"], ORIGIN["lat"]),
+        "lonlat:%f,%f;color:#1f6feb;size:large;text:B" % (dest_lon, dest_lat),
+    ])
+
+    def fetch(with_line: bool) -> bytes:
+        params = [
+            ("style", "osm-bright"),
+            ("width", str(MAP_W)),
+            ("height", str(MAP_H)),
+            ("marker", markers),
+            ("apiKey", GEOAPIFY_KEY),
+        ]
+        if with_line and geometry:
+            params.append(("geometry", "polyline:" + geometry))
+        url = "https://maps.geoapify.com/v1/staticmap?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=40) as r:
+            return r.read()
+
+    try:
+        return fetch(True)
+    except Exception:
+        return fetch(False)
+
+
+def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
+    """Render route cards for jobs that do not have one yet.
+
+    Never raises: a missing key, an unresolvable city or a service blip means that card has no
+    map, not that the run failed.
+    """
+    if not has_map_keys():
+        return [], {}
+    done = st.setdefault("maps_done", {})
+    geo = st.setdefault("geo", {})
+    out, drive = [], {}
+    for key, job in jobs.items():
+        if key in done:
+            continue
+        loc = (job.get("location") or "").strip()
+        if not _GEOCODABLE.search(loc):
+            # "Southeastern PA" and friends cannot be geocoded; leave the card map-less.
+            done[key] = {"skipped": "no city"}
+            continue
+        try:
+            coords = geo.get(loc)
+            if not coords:
+                coords = geocode(loc)
+                time.sleep(0.3)
+                if not coords:
+                    done[key] = {"skipped": "not found"}
+                    continue
+                geo[loc] = list(coords)
+            route = route_summary(coords[0], coords[1])
+            time.sleep(0.3)
+            png = static_map_png(coords[0], coords[1], route.get("geometry", ""))
+            out.append({
+                "employer": job["employer"],
+                "job_id": str(job["id"]),
+                "drive_min": route["minutes"],
+                "drive_mi": route["miles"],
+                "origin_label": ORIGIN["label"],
+                "png": base64.b64encode(png).decode("ascii"),
+            })
+            drive[key] = route["minutes"]
+            done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"]}
+        except Exception as e:
+            done[key] = {"error": str(e)[:80]}
+            time.sleep(1.0)
+    return out, drive
+
+
+def check_origin() -> int:
+    """Re-geocode the pinned origin address and report how far the pin has drifted."""
+    if not ORS_KEY:
+        print("ORS_KEY is not set")
+        return 1
+    got = geocode(ORIGIN["address"])
+    if not got:
+        print("could not geocode %r" % ORIGIN["address"])
+        return 1
+    lat, lon = got
+    dlat = (lat - ORIGIN["lat"]) * 111_320
+    dlon = (lon - ORIGIN["lon"]) * 111_320 * math.cos(math.radians(ORIGIN["lat"]))
+    metres = math.hypot(dlat, dlon)
+    print("pinned  %.5f, %.5f" % (ORIGIN["lat"], ORIGIN["lon"]))
+    print("geocode %.5f, %.5f  (%s)" % (lat, lon, ORIGIN["address"]))
+    print("drift   %.0f m" % metres)
+    return 0 if metres < 500 else 1
+
+
+def backfill_maps(st, relevant: dict) -> int:
+    """Render route cards for every relevant job that does not have one yet."""
+    if not has_map_keys():
+        print("needs ORS_KEY and GEOAPIFY_KEY in ~/.hermes/.env - nothing to do")
+        return 1
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    todo = {k: v for k, v in relevant.items() if k not in st.get("maps_done", {})}
+    print("maps: %d of %d relevant postings need a route card" % (len(todo), len(relevant)))
+    maps, drive = build_maps(todo, st, now)
+    save_state(st)
+    print("rendered %d map(s); %d without one" % (len(maps), len(todo) - len(maps)))
+    if maps:
+        print("dashboard sync: %s" % push_maps(maps, now))
+    return 0
+
+
+def relevant_from_state(st) -> dict:
+    """Rebuild the current board from state, without re-scraping.
+
+    Only used by --backfill-maps, which needs employer/id/location/title and nothing else.
+    """
+    locs = st.get("locations", {})
+    out = {}
+    for key, v in (st.get("seen") or {}).items():
+        if not v.get("url"):
+            continue
+        employer, _, jid = key.partition("|")
+        loc = locs.get(key) or v.get("location") or ""
+        if not classify(v.get("title", ""), loc, v["url"], derived=key in locs)[0]:
+            continue
+        out[key] = {
+            "employer": employer,
+            "id": jid,
+            "title": v.get("title", ""),
+            "location": loc,
+            "url": v["url"],
+            "posted": v.get("posted"),
+        }
+    return out
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--selftest" in args:
@@ -1613,6 +1846,10 @@ def main() -> int:
         return backfill_posted(st)
     if "--backfill-location" in args:
         return backfill_location(st)
+    if "--check-origin" in args:
+        return check_origin()
+    if "--backfill-maps" in args:
+        return backfill_maps(st, relevant_from_state(st))
     found, errors = collect(st.get("source_health", {}))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1727,6 +1964,10 @@ def main() -> int:
     new_keys = verified
     save_state(st)
 
+    # Route cards for the new matches, so the board shows them with their map already stored.
+    maps, drive_min = build_maps({k: relevant[k] for k in new_keys}, st, now)
+    save_state(st)
+
     baseline = (not st.get("baseline_done")) or ("--baseline" in args)
     if baseline:
         # A baseline means "everything currently live is already known" - mark the
@@ -1748,6 +1989,9 @@ def main() -> int:
         return 0
 
     st["web_sync"] = push_snapshot(relevant, now)
+    if maps:
+        # After the job rows exist: job_maps has a foreign key onto jobs.
+        st["web_sync_maps"] = push_maps(maps, now)
     save_state(st)
 
     if not new_keys:
@@ -1769,6 +2013,8 @@ def main() -> int:
         lines.append("%d. %s\n   🏥 %s" % (i, j["title"], j["employer"]))
         if j["location"]:
             lines.append("   📍 %s" % j["location"])
+        if drive_min.get(k):
+            lines.append("   🚗 %d min from %s" % (drive_min[k], ORIGIN["label"]))
         lines.append("   🔗 %s\n" % j["url"])
     if len(new_keys) > 10:
         lines.append("…and %d more (run with --dump for the full list)" % (len(new_keys) - 10))

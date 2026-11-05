@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ensureSchema, jobId, pool } from '@/lib/db';
+import { ensureSchema, jobId, MAX_MAP_BYTES, pool } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,6 +11,16 @@ interface IncomingJob {
   location?: string | null;
   url?: string | null;
   posted?: string | null;
+}
+
+/** A route card: the rendered map plus the drive time it was rendered for. */
+interface IncomingMap {
+  employer: string;
+  job_id: string;
+  drive_min?: number | null;
+  drive_mi?: number | null;
+  origin_label?: string | null;
+  png: string; // base64
 }
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -25,7 +35,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  let body: { jobs?: IncomingJob[]; run_at?: string; scanner?: string };
+  let body: { jobs?: IncomingJob[]; maps?: IncomingMap[]; run_at?: string; scanner?: string };
   try {
     body = await req.json();
   } catch {
@@ -33,7 +43,8 @@ export async function POST(req: Request) {
   }
 
   const jobs = Array.isArray(body.jobs) ? body.jobs : [];
-  if (jobs.length === 0) {
+  const maps = Array.isArray(body.maps) ? body.maps : [];
+  if (jobs.length === 0 && maps.length === 0) {
     return NextResponse.json({ ok: true, inserted: 0, updated: 0, total: 0, note: 'empty snapshot' });
   }
 
@@ -43,6 +54,8 @@ export async function POST(req: Request) {
     await client.query('BEGIN');
     let inserted = 0;
     let updated = 0;
+    let mapsStored = 0;
+    let mapsSkipped = 0;
 
     for (const j of jobs) {
       if (!j || !j.employer || !j.job_id || !j.title) continue;
@@ -65,6 +78,41 @@ export async function POST(req: Request) {
       else updated += 1;
     }
 
+    for (const m of maps) {
+      if (!m || !m.employer || !m.job_id || typeof m.png !== 'string') continue;
+      const id = jobId(m.employer, String(m.job_id));
+      let png: Buffer;
+      try {
+        png = Buffer.from(m.png, 'base64');
+      } catch {
+        mapsSkipped += 1;
+        continue;
+      }
+      // A route card is an enhancement: never let a bad one fail the whole ingest.
+      if (png.length === 0 || png.length > MAX_MAP_BYTES) {
+        mapsSkipped += 1;
+        continue;
+      }
+      const { rowCount } = await client.query(
+        `INSERT INTO job_maps (id, png, drive_min, drive_mi, origin_label, generated_at)
+         VALUES ($1, $2, $3, $4, $5, now())
+         ON CONFLICT (id) DO UPDATE
+           SET png          = EXCLUDED.png,
+               drive_min    = EXCLUDED.drive_min,
+               drive_mi     = EXCLUDED.drive_mi,
+               origin_label = EXCLUDED.origin_label,
+               generated_at = now()`,
+        [
+          id,
+          png,
+          Number.isFinite(Number(m.drive_min)) ? Math.round(Number(m.drive_min)) : null,
+          Number.isFinite(Number(m.drive_mi)) ? Number(m.drive_mi) : null,
+          typeof m.origin_label === 'string' ? m.origin_label.slice(0, 80) : null,
+        ],
+      );
+      if (rowCount) mapsStored += 1;
+    }
+
     await client.query(
       `INSERT INTO meta (key, value) VALUES ('last_ingest', $1)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
@@ -80,7 +128,14 @@ export async function POST(req: Request) {
     }
 
     await client.query('COMMIT');
-    return NextResponse.json({ ok: true, inserted, updated, total: inserted + updated });
+    return NextResponse.json({
+      ok: true,
+      inserted,
+      updated,
+      total: inserted + updated,
+      maps: mapsStored,
+      mapsSkipped,
+    });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     return NextResponse.json({ error: String(err).slice(0, 300) }, { status: 500 });

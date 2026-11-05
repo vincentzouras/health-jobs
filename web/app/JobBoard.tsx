@@ -9,6 +9,8 @@ import {
   CardContent,
   Chip,
   Container,
+  Dialog,
+  DialogContent,
   Divider,
   Link,
   MenuItem,
@@ -23,7 +25,12 @@ import { employerColor, type EmployerColor } from './employerColor';
 interface ApiPayload {
   active: Job[];
   archive: Job[];
-  meta: { lastIngest: string | null; scannerVersion: string | null; db: boolean };
+  meta: {
+    lastIngest: string | null;
+    scannerVersion: string | null;
+    mapOrigin: string | null;
+    db: boolean;
+  };
   error?: string;
 }
 
@@ -89,6 +96,124 @@ function metaLine(job: Job, rel: (iso: string | null) => string, marked = false)
   ]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** "42 min" / "1 hr 15 min" */
+function fmtDrive(min: number | null): string {
+  if (min === null || !Number.isFinite(min)) return '';
+  const m = Math.round(min);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest ? `${h} hr ${rest} min` : `${h} hr`;
+}
+
+/** Green / amber / red by commute length — the "can I actually do this daily" question. */
+function driveColor(min: number | null): 'success' | 'warning' | 'error' | 'default' {
+  if (min === null || !Number.isFinite(min)) return 'default';
+  if (min < 30) return 'success';
+  if (min <= 60) return 'warning';
+  return 'error';
+}
+
+/**
+ * The stored route card for one job: a PNG the Pi rendered once at ingest, plus the drive
+ * time it was rendered for. Clicking opens it larger — nothing here calls a map API.
+ */
+function RouteCard({
+  job,
+  origin,
+}: {
+  job: Job;
+  origin: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!job.hasMap) return null;
+
+  const src = `/api/map/${job.id}`;
+  const drive = fmtDrive(job.driveMin);
+  const miles = job.driveMi === null ? '' : `${Math.round(job.driveMi)} mi`;
+  const from = origin ? `from ${origin}` : 'from the start point';
+  const googleMaps = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    origin ?? '',
+  )}&destination=${encodeURIComponent(job.location ?? job.title)}&travelmode=driving`;
+  const alt = `Drive ${from} to ${job.location ?? job.title}`;
+
+  return (
+    <>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ mt: 1.5, alignItems: 'flex-start' }}>
+        <Box
+          component="img"
+          src={src}
+          alt={alt}
+          loading="lazy"
+          width={200}
+          height={100}
+          onClick={() => setOpen(true)}
+          sx={{
+            display: 'block',
+            width: 200,
+            height: 100,
+            flexShrink: 0,
+            objectFit: 'cover',
+            borderRadius: 1,
+            border: 1,
+            borderColor: 'divider',
+            cursor: 'zoom-in',
+          }}
+        />
+        <Box sx={{ minWidth: 0 }}>
+          <Stack direction="row" spacing={0.5} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
+            <Chip
+              size="small"
+              color={driveColor(job.driveMin)}
+              variant="outlined"
+              label={[drive, miles].filter(Boolean).join(' · ')}
+            />
+          </Stack>
+          <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5 }}>
+            {from}
+          </Typography>
+          <Link
+            href={googleMaps}
+            target="_blank"
+            rel="noopener noreferrer"
+            variant="caption"
+            underline="hover"
+            sx={{ display: 'inline-block', mt: 0.5 }}
+          >
+            Open in Google Maps ↗
+          </Link>
+        </Box>
+      </Stack>
+
+      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="md" fullWidth>
+        <DialogContent>
+          <Typography variant="subtitle1" component="h2" gutterBottom>
+            {job.title}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" gutterBottom>
+            {[drive, miles, from].filter(Boolean).join(' · ')}
+          </Typography>
+          <Box
+            component="img"
+            src={src}
+            alt={alt}
+            sx={{ display: 'block', width: '100%', height: 'auto', borderRadius: 1, border: 1, borderColor: 'divider' }}
+          />
+          <Stack direction="row" spacing={1} sx={{ mt: 1.5, alignItems: 'center' }}>
+            <Typography variant="caption" color="text.secondary">
+              © OpenStreetMap contributors · Geoapify · routes by openrouteservice
+            </Typography>
+            <Box sx={{ flex: 1 }} />
+            <Button size="small" href={googleMaps} target="_blank" rel="noopener noreferrer">
+              Directions
+            </Button>
+          </Stack>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 /** Colored pill so each employer is recognizable at a glance. */
@@ -469,6 +594,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                           />
                         )}
                       </Stack>
+                      <RouteCard job={job} origin={data.meta.mapOrigin} />
                     </Box>
                     <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
                       <Button
@@ -561,6 +687,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
                               “{job.statusReason}”
                             </Typography>
                           )}
+                          <RouteCard job={job} origin={data.meta.mapOrigin} />
                         </Box>
                         <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: 'flex-start' }}>
                           <Button size="small" disabled={!!busy[job.id]} onClick={() => void setStatus(job.id, 'new')}>
