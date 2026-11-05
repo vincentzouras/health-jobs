@@ -122,6 +122,13 @@ simply absent: jobs still sync and show, they just have no map.
 - `normalize_location()` tidies what the boards publish (`"West Chester, PA, United States"`,
   `"Wilmington, Delaware"`, `"York, PA 17403"`) into `"City, ST"`; `geocodable()` then rejects
   regions (`"Southeastern PA"`), which are source defaults rather than places.
+- `_pick_point()` only adopts a geocoder hit whose **state and name both match** the posting:
+  Pelias will offer "Northeast Ithaca, NY" for "Northeast Philadelphia, PA", and asking for a
+  locality-only layer (a shortcut tried for the Wilmington river problem) forced a match 50 miles
+  from York. No convincing hit means no card, rather than a confidently wrong one.
+- `_route_too_short()` is a second, independent invariant: a road distance below the straight line
+  between the same two points cannot be real. It catches scrambled coordinates, not a wrong-but-
+  nearby geocode — that is `_pick_point`'s job.
 - `snap_point()` puts the geocoded city on the nearest road first: openrouteservice geocodes
   Wilmington, DE into the Delaware River and then refuses to route to it.
 - `_ors_json()` paces calls to 40/minute (the free-tier limit) and backs off on 429/403, because a
