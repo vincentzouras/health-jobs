@@ -1816,6 +1816,25 @@ def geocode(location: str):
     return None
 
 
+def snap_point(lat: float, lon: float) -> tuple:
+    """Move a geocoded point onto the road network.
+
+    A city's geocoded centre can sit on water or in a park — openrouteservice puts Wilmington,
+    DE in the Delaware River — and directions then refuse it outright, so snap first.
+    """
+    try:
+        data = _ors_json(
+            "POST", "https://api.openrouteservice.org/v2/snap/driving-car",
+            {"locations": [[lon, lat]], "radius": 2000},
+            {"Authorization": ORS_KEY, "Accept": "application/json"})
+        got = ((data.get("locations") or [{}])[0] or {}).get("location") or []
+        if len(got) >= 2:
+            return float(got[1]), float(got[0])
+    except Exception as e:
+        MAP_ERROR["geocode"] = _err_text(e)
+    return lat, lon
+
+
 def route_summary(dest_lat: float, dest_lon: float) -> dict:
     """Drive time and distance from the pinned origin, plus the route as an encoded polyline."""
     if not ORS_KEY:
@@ -1877,6 +1896,7 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                         raise RuntimeError(MAP_ERROR["geocode"])
                     done[key] = {"skipped": "not found", "loc": loc}
                     continue
+                coords = snap_point(coords[0], coords[1])
                 geo[loc] = list(coords)
             route = route_summary(coords[0], coords[1])
             if not route["minutes"] or not route["geometry"]:
@@ -1956,7 +1976,9 @@ def check_maps() -> int:
         if MAP_ERROR["geocode"]:
             print("  reason: %s" % MAP_ERROR["geocode"])
         return 1
-    route = route_summary(dest[0], dest[1])
+    snapped = snap_point(dest[0], dest[1])
+    print("snap to road     %s -> %s" % (dest, snapped))
+    route = route_summary(snapped[0], snapped[1])
     print("route            %s min / %s mi (geometry %d chars)"
           % (route["minutes"], route["miles"], len(route.get("geometry") or "")))
     if not route["minutes"]:
