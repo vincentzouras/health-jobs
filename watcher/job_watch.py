@@ -86,6 +86,7 @@ GEOAPIFY_KEY = os.environ.get("GEOAPIFY_KEY", "")
 MAP_W, MAP_H = 800, 400
 # The board rejects a row over 300 KB; leave room for base64 growth.
 MAX_MAP_PNG = 280 * 1024
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 # Roughly a 20 minute drive; below this the card's "too far to bother" judgement is moot.
 MAP_NEAR_MIN, MAP_FAR_MIN = 30, 60
 
@@ -97,6 +98,9 @@ GEOAPIFY_STATIC = "https://maps.geoapify.com/v1/staticmap"
 
 # Locations like "Southeastern PA" are source defaults, not real places.
 _GEOCODABLE = re.compile(r",\s*(?:PA|NJ|DE|MD|NY|WV|VA)\s*$", re.I)
+
+# Set by the provider helpers so --check-maps can say why a step failed, not just that it did.
+MAP_ERROR = {"geocode": "", "route": "", "map": ""}
 
 
 def has_map_keys() -> bool:
@@ -1603,6 +1607,14 @@ def selftest() -> int:
     empty = _geoapify_route({})
     mcases.append(("route empty", empty["minutes"] is None and empty["geometry"] == "",
                    (empty["minutes"], empty["geometry"])))
+    # A failed render must come back on the next run, a rendered or knowingly skipped one must not.
+    settled = [
+        ("settled fresh", _map_settled({}) is False),
+        ("settled done", _map_settled({"at": "2026-01-01", "min": 42}) is True),
+        ("settled no city", _map_settled({"skipped": "no city"}) is True),
+        ("settled retry", _map_settled({"err": "HTTP 401 Unauthorized"}) is False),
+    ]
+    mcases.extend([(n, ok, ok) for n, ok in settled])
     mfails = 0
     for name, ok, got in mcases:
         if not ok:
@@ -1785,6 +1797,17 @@ def _geoapify_route(data: dict) -> dict:
     }
 
 
+def _err_text(e) -> str:
+    """An HTTP error body is the only thing that says *why* a provider refused us."""
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            body = e.read().decode("utf-8", "replace")
+            return "HTTP %s %s" % (e.code, " ".join(body.split())[:160])
+        except Exception:
+            return "HTTP %s" % e.code
+    return " ".join(str(e).split())[:200]
+
+
 def geocode(location: str):
     """"City, ST" -> (lat, lon). None when it cannot resolve; never raises."""
     if GEOAPIFY_KEY:
@@ -1796,8 +1819,8 @@ def geocode(location: str):
             got = _geoapify_point(_http_json("GET", GEOAPIFY_GEOCODE + "?" + q, timeout=25))
             if got:
                 return got
-        except Exception:
-            pass
+        except Exception as e:
+            MAP_ERROR["geocode"] = _err_text(e)
     if ORS_KEY:
         try:
             q = urllib.parse.urlencode({
@@ -1808,8 +1831,8 @@ def geocode(location: str):
                                              timeout=25))
             if got:
                 return got
-        except Exception:
-            pass
+        except Exception as e:
+            MAP_ERROR["geocode"] = _err_text(e)
     return None
 
 
@@ -1828,8 +1851,9 @@ def route_summary(dest_lat: float, dest_lon: float) -> dict:
             got = _geoapify_route(_http_json("GET", GEOAPIFY_ROUTE + "?" + q, timeout=30))
             if got["minutes"]:
                 return got
-        except Exception:
-            pass
+            MAP_ERROR["route"] = "no duration in the routing response"
+        except Exception as e:
+            MAP_ERROR["route"] = _err_text(e)
     if not ORS_KEY:
         return {"minutes": None, "miles": None, "geometry": "", "precision": 6}
     body = json.dumps({
@@ -1895,9 +1919,19 @@ def static_map_png(dest_lat: float, dest_lon: float, geometry: str = "",
             body.pop("geometries", None)
             png = _post_bytes(url, body)
         return png
-    except Exception:
+    except Exception as e:
+        MAP_ERROR["map"] = _err_text(e)
         body.pop("geometries", None)
-        return _post_bytes(url, body)
+        try:
+            return _post_bytes(url, body)
+        except Exception as e2:
+            MAP_ERROR["map"] = _err_text(e2)
+            raise
+
+
+def _map_settled(rec: dict) -> bool:
+    """Rendered, or knowingly skipped. Anything else is retried on the next run."""
+    return bool(rec.get("skipped") or rec.get("at"))
 
 
 def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
@@ -1911,8 +1945,10 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
     done = st.setdefault("maps_done", {})
     geo = st.setdefault("geo", {})
     out, drive = [], {}
+    provider_fails = 0
     for key, job in jobs.items():
-        if key in done:
+        rec = done.get(key) or {}
+        if _map_settled(rec):
             continue
         loc = (job.get("location") or "").strip()
         if not _GEOCODABLE.search(loc):
@@ -1925,6 +1961,9 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
                 coords = geocode(loc)
                 time.sleep(0.3)
                 if not coords:
+                    if MAP_ERROR["geocode"]:
+                        # The provider refused us, so this says nothing about the city.
+                        raise RuntimeError(MAP_ERROR["geocode"])
                     done[key] = {"skipped": "not found"}
                     continue
                 geo[loc] = list(coords)
@@ -1932,6 +1971,9 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
             time.sleep(0.3)
             png = static_map_png(coords[0], coords[1], route.get("geometry", ""),
                                  route.get("precision", 6))
+            if png[:8] != PNG_MAGIC:
+                # Never store a refusal body as if it were a map.
+                raise RuntimeError("static map returned %r" % png[:60])
             out.append({
                 "employer": job["employer"],
                 "job_id": str(job["id"]),
@@ -1943,7 +1985,14 @@ def build_maps(jobs: dict, st: dict, now: str) -> tuple[list, dict]:
             drive[key] = route["minutes"]
             done[key] = {"at": now, "min": route["minutes"], "mi": route["miles"]}
         except Exception as e:
-            done[key] = {"error": str(e)[:80]}
+            # Leave the record unsettled so the next run tries again: a bad key or a blip must
+            # not cost a card its map for good. Bail out early rather than burn a call per job.
+            provider_fails += 1
+            msg = _err_text(e)[:120]
+            done[key] = {"err": msg}
+            if provider_fails >= 3:
+                print("maps: stopping this run after %d failure(s) - %s" % (provider_fails, msg))
+                break
             time.sleep(1.0)
     return out, drive
 
@@ -1980,12 +2029,15 @@ def check_maps() -> int:
     print("geocode origin   %s -> %s" % (ORIGIN["address"], origin))
     if not origin:
         print("  FAILED: cannot resolve the pinned start address")
-        print("  a 401 here means the key is rejected, not that the address is bad")
+        if MAP_ERROR["geocode"]:
+            print("  reason: %s" % MAP_ERROR["geocode"])
         return 1
     dest = geocode("West Chester, PA")
     print("geocode sample   West Chester, PA -> %s" % (dest,))
     if not dest:
         print("  FAILED: cannot resolve a corridor city")
+        if MAP_ERROR["geocode"]:
+            print("  reason: %s" % MAP_ERROR["geocode"])
         return 1
     route = route_summary(dest[0], dest[1])
     print("route            %s min / %s mi (geometry %d chars, polyline%s)"
@@ -1993,14 +2045,19 @@ def check_maps() -> int:
              route.get("precision", 6)))
     if not route["minutes"]:
         print("  FAILED: directions returned no duration")
+        if MAP_ERROR["route"]:
+            print("  reason: %s" % MAP_ERROR["route"])
         rc = 1
     png = static_map_png(dest[0], dest[1], route.get("geometry", ""), route.get("precision", 6))
-    good = png[:8] == b"\x89PNG\r\n\x1a\n"
+    good = png[:8] == PNG_MAGIC
     print("static map       %d bytes, valid PNG: %s" % (len(png), good))
     if not good:
         print("  FAILED: response is not a PNG (check GEOAPIFY_KEY / style name)")
+        if MAP_ERROR["map"]:
+            print("  reason: %s" % MAP_ERROR["map"])
         print("  body: %s" % png[:160].decode("utf-8", "replace"))
         rc = 1
+    print("map budget       %d of %d bytes used" % (len(png), MAX_MAP_PNG))
     print("OK" if rc == 0 else "see failures above")
     return rc
 
@@ -2011,7 +2068,8 @@ def backfill_maps(st, relevant: dict) -> int:
         print("needs GEOAPIFY_KEY in ~/.hermes/.env - nothing to do")
         return 1
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    todo = {k: v for k, v in relevant.items() if k not in st.get("maps_done", {})}
+    finished = st.get("maps_done", {})
+    todo = {k: v for k, v in relevant.items() if not _map_settled(finished.get(k) or {})}
     print("maps: %d of %d relevant postings need a route card" % (len(todo), len(relevant)))
     maps, drive = build_maps(todo, st, now)
     save_state(st)
