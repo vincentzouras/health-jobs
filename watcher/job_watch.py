@@ -1369,6 +1369,35 @@ def _boundary_selftest() -> int:
             if not ok:
                 fails += 1
             print("%-6s %-20s -> %s" % ("PASS" if ok else "FAIL", name, ok))
+
+        # A quota refusal must NOT be cached: the daily window rolls on its own, so the next
+        # run has to retry rather than wait out the 24 hour error window. A genuine bad
+        # address IS cached, or every run would pay for it again.
+        def quota_route(cluster, lat, lon):
+            MAP_ERROR["route"] = 'HTTP 403 { "error": "Quota exceeded" }'
+            return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
+
+        route_summary = quota_route
+        st_q = {"geo": {}, "routes": {}}
+        rec = resolve_route("Lancaster, PA", st_q)
+        ok = not st_q["routes"] and "Quota" in (rec.get("error") or "")
+        if not ok:
+            fails += 1
+        print("%-6s %-20s -> cached=%s" % ("PASS" if ok else "FAIL", "quota not cached",
+                                           bool(st_q["routes"])))
+
+        def bad_route(cluster, lat, lon):
+            MAP_ERROR["route"] = "HTTP 404 no routable point"
+            return {"minutes": None, "raw_minutes": None, "miles": None, "geometry": ""}
+
+        route_summary = bad_route
+        st_b = {"geo": {}, "routes": {}}
+        resolve_route("Lancaster, PA", st_b)
+        ok = bool(st_b["routes"])
+        if not ok:
+            fails += 1
+        print("%-6s %-20s -> cached=%s" % ("PASS" if ok else "FAIL", "bad address cached",
+                                           bool(st_b["routes"])))
     finally:
         geocode, snap_point, route_summary = saved
     return fails
@@ -2122,17 +2151,15 @@ def resolve_route(loc, st: dict) -> dict:
         else:
             return cached
     if not loc or not geocodable(loc):
-        routes[loc] = {"skipped": "no city", "at": now_iso()}
-        return routes[loc]
+        return _remember(routes, loc, {"skipped": "no city", "at": now_iso()})
 
     geo = st.setdefault("geo", {})
     coords = geo.get(loc)
     if not coords:
         coords = geocode(loc)
         if not coords:
-            reason = MAP_ERROR["geocode"] or "not found"
-            routes[loc] = {"skipped": reason, "at": now_iso()}
-            return routes[loc]
+            return _remember(routes, loc,
+                             {"skipped": MAP_ERROR["geocode"] or "not found", "at": now_iso()})
         coords = snap_point(coords[0], coords[1])
         geo[loc] = list(coords)
 
@@ -2146,8 +2173,8 @@ def resolve_route(loc, st: dict) -> dict:
         if alt["minutes"] and alt["geometry"]:
             cluster, route = other, alt
         if not route["minutes"] or not route["geometry"]:
-            routes[loc] = {"error": MAP_ERROR["route"] or "directions failed", "at": now_iso()}
-            return routes[loc]
+            return _remember(routes, loc,
+                             {"error": MAP_ERROR["route"] or "directions failed", "at": now_iso()})
     elif route["minutes"] > CLUSTER_MAX_MINUTES:
         other = [k for k in ORIGINS if k != cluster][0]
         alt = route_summary(other, coords[0], coords[1])
@@ -2157,9 +2184,9 @@ def resolve_route(loc, st: dict) -> dict:
     straight = _straight_miles(
         ORIGINS[cluster]["lat"], ORIGINS[cluster]["lon"], coords[0], coords[1])
     if _route_too_short(route["miles"], straight):
-        routes[loc] = {"error": "%s mi route beats the %.0f mi straight line"
-                                % (route["miles"], straight), "at": now_iso()}
-        return routes[loc]
+        return _remember(routes, loc,
+                         {"error": "%s mi route beats the %.0f mi straight line"
+                                   % (route["miles"], straight), "at": now_iso()})
 
     routes[loc] = {
         "at": now_iso(),
