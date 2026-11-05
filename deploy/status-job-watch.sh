@@ -17,6 +17,7 @@ CRON_ID="${JOB_WATCH_CRON_ID:-8e7a83cfdc37}"
 fails=0
 ok()   { printf '  PASS  %-26s %s\n' "$1" "$2"; }
 bad()  { printf '  FAIL  %-26s %s\n' "$1" "$2"; fails=$((fails+1)); }
+warn() { printf '  WARN  %-26s %s\n' "$1" "$2"; }
 info() { printf '  ----  %-26s %s\n' "$1" "$2"; }
 
 # board credentials live in the shared env file, same as job_watch.py reads
@@ -116,12 +117,23 @@ else
 fi
 
 # 6. browser + credentials
+# The browser exits after 2 minutes idle by design (BROWSER_IDLE_TIMEOUT_MS), so "not running"
+# is the normal resting state and only service-level trouble is a failure.
+SVC=$(systemctl --user is-active camofox.service 2>/dev/null || true)
 CJ=$(curl -s -m 8 http://127.0.0.1:9377/health 2>/dev/null || true)
+case "$SVC" in
+  active) ;;
+  *) bad "camofox service" "${SVC:-not running} - start it with: systemctl --user start camofox" ;;
+esac
 case "$CJ" in
+  "")
+    [ "$SVC" = "active" ] && bad "camofox" "no response on 127.0.0.1:9377 despite an active service"
+    ;;
   *'"browserRunning":true'*) ok "camofox" "browser up" ;;
-  *"browser_rss_pressure"*) bad "camofox" "killed for RSS pressure - the next run self-heals, or POST /start" ;;
-  "") bad "camofox" "no response on 127.0.0.1:9377" ;;
-  *) bad "camofox" "$(printf '%s' "$CJ" | cut -c1-90)" ;;
+  *browser_rss_pressure*)
+    # A page blew past the 450 MB cap. The run revives it, but it is worth knowing about.
+    warn "camofox" "last browser was killed for RSS pressure; revives on the next run" ;;
+  *) warn "camofox" "browser idle (starts on demand); service is active" ;;
 esac
 [ -n "${JOB_BOARD_TOKEN:-}" ] && ok "JOB_BOARD_TOKEN" "set" || bad "JOB_BOARD_TOKEN" "missing in ~/.hermes/.env"
 [ -n "${JOB_BOARD_URL:-}" ] && info "JOB_BOARD_URL" "$JOB_BOARD_URL" || info "JOB_BOARD_URL" "default (production)"
