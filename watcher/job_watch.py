@@ -2418,9 +2418,11 @@ def backfill_maps(st, relevant: dict) -> int:
         print("needs ORS_KEY in ~/.hermes/.env - nothing to do")
         return 1
     now = now_iso()
-    todo = {k: v for k, v in relevant.items() if not _map_settled(st.get("maps_done", {}).get(k) or {})}
-    print("maps: %d of %d known postings need resolving" % (len(todo), len(relevant)))
-    maps, _drive, dropped = build_maps(todo, st, now)
+    # Every known posting, not just the ones without a card: build_maps() decides what to push
+    # by comparing against what is stored, which is how the switch to two clusters reaches
+    # cards that were written when there was a single origin.
+    print("maps: resolving %d known postings" % len(relevant))
+    maps, _drive, dropped = build_maps(relevant, st, now)
     save_state(st)
     print("route cards: %d to push, %d dropped (%s)"
           % (len(maps), sum(dropped.values()),
