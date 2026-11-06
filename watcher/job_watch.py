@@ -1862,8 +1862,12 @@ def check_source_health(found, errors, prev_health) -> tuple[list, dict]:
 RUN_LOCK = None
 
 
-def acquire_run_lock() -> bool:
-    """Take the scan lock, or report that another run owns it. Never raises."""
+def acquire_run_lock(path=None) -> bool:
+    """Take the scan lock, or report that another run owns it. Never raises.
+
+    `path` exists so the selftest can prove the mutual exclusion without fighting a scan that is
+    running at the time (the doctor runs the selftest on demand).
+    """
     global RUN_LOCK
     try:
         import fcntl
@@ -1872,7 +1876,7 @@ def acquire_run_lock() -> bool:
     if RUN_LOCK is not None:
         return False
     try:
-        fh = open(STATE_DIR / "job-watch.lock", "a+")
+        fh = open(path or (STATE_DIR / "job-watch.lock"), "a+")
     except Exception:
         return True  # unwritable state dir is a bigger problem than a double scan
     try:
@@ -2886,11 +2890,13 @@ def selftest() -> int:
         posix_lock = True
     except ImportError:
         posix_lock = False
-    first = acquire_run_lock()
-    second = acquire_run_lock()
+    lock_tmp = Path(tempfile.mkdtemp(prefix="jw-lock-")) / "test.lock"
+    first = acquire_run_lock(lock_tmp)
+    second = acquire_run_lock(lock_tmp)
     release_run_lock()
-    again = acquire_run_lock()
+    again = acquire_run_lock(lock_tmp)
     release_run_lock()
+    shutil.rmtree(lock_tmp.parent, ignore_errors=True)
     lk_cases = [
         ("acquire", first is True, first),
         # Without fcntl (the Windows dev box) the lock is a no-op by design, so only assert on POSIX.
