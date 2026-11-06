@@ -74,6 +74,13 @@ dashboard says paused, too soon, or on-demand-only; otherwise it does a full sca
 walks detail pages of postings already on file (25 by default) and records any job host that is not
 one of the 11 sources, so the queue on the board fills without waiting for new postings.
 
+Discovery is filtered or it is useless. A registrable domain is the unit (`careers.foo.org` and
+`foo.org` are one entry), `LINK_NOISE` drops analytics/CDN/social/webmail/vendor hosts — including
+NEOGOV's own properties, since a county board *is* `governmentjobs.com` — and a source can declare
+`"also": ["chesco.org"]` for an employer's other domains. Entries that today's rules reject are
+pruned from the state file on every run, so the queue cannot accumulate junk that a later
+denylist entry would have prevented.
+
 ## Geography: two clusters, 50 minutes each
 
 The rule is distance, not a city list:
