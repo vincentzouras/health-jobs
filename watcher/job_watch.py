@@ -1189,6 +1189,16 @@ for _s in SOURCES:
 KNOWN_ORG_KEYS = {org_key(h) for h in KNOWN_SITE_HOSTS}
 
 
+def _candidate_ok(host: str) -> bool:
+    """Global rules only: is this host worth keeping in the queue at all?
+
+    Applied to the queue on every run as well, so an entry recorded before a host was added to
+    the noise list (or before a source claimed the domain) falls out by itself.
+    """
+    return bool(host) and host not in KNOWN_SITE_HOSTS and host not in LINK_NOISE \
+        and org_key(host) not in KNOWN_ORG_KEYS
+
+
 def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
     """Fold one posting's outbound links into the candidate queue. Returns the queue size.
 
@@ -1205,10 +1215,7 @@ def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
             if not isinstance(url, str):
                 continue
             host = site_host(url)
-            if not host or host == own or host in KNOWN_SITE_HOSTS or host in LINK_NOISE:
-                continue
-            key = org_key(host)
-            if key and (key == own_key or key in KNOWN_ORG_KEYS):
+            if host == own or not _candidate_ok(host) or org_key(host) == own_key:
                 continue
             entry = queue.get(host)
             if entry:
@@ -1220,6 +1227,8 @@ def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
                     "title": (job.get("title") or "")[:120],
                     "employer": job.get("employer") or "",
                 }
+        for stale in [h for h in queue if not _candidate_ok(h)]:
+            queue.pop(stale, None)
         return len(queue)
     except Exception:
         return -1
@@ -2245,6 +2254,13 @@ def selftest() -> int:
                    len(st_cap.get("candidates", {}))))
     scases.append(("garbage in, no raise", harvest_hosts({}, [None, 5, ""], job, stamp) == 0,
                    harvest_hosts({}, [None, 5, ""], job, stamp)))
+    # A queue carrying entries that today's rules reject (added to the denylist later) is pruned
+    # on sight, so the state file heals itself instead of shipping the same 14 rows forever.
+    st_old = {"candidates": {"neogov.com": {"n": 9}, "chesco.org": {"n": 3},
+                             "ttcportals.com": {"n": 4}}}
+    harvest_hosts(st_old, [], job, stamp)
+    scases.append(("stale entries pruned",
+                   set(st_old["candidates"]) == {"ttcportals.com"}, sorted(st_old["candidates"])))
     sfails = 0
     for name, ok, got in scases:
         if not ok:
