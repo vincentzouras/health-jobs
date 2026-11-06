@@ -65,6 +65,7 @@ $PY job_watch.py --backfill-location # replace a source's guessed city with the 
 $PY job_watch.py --backfill-maps     # resolve route cards for postings that lack one
 $PY job_watch.py --discover          # fill the "sites we do not scrape yet" queue from the board
 $PY job_watch.py --list-sources      # native + added sources, with health
+$PY job_watch.py --find-board "Employer" [--location "City, ST"] [--add]  # name -> board -> install
 $PY job_watch.py --probe-source URL [--name X]   # is this board worth adding? prints JSON
 $PY job_watch.py --probe-source URL --name X --add   # ...and install it when it passed
 $PY job_watch.py --add-source '<json>'           # install straight from a probe's "source"

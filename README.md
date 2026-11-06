@@ -58,7 +58,7 @@ That is what keeps a run free, reproducible and immune to invented postings.
 | Trigger | What it does | Cadence |
 |---|---|---|
 | `8e7a83cfdc37` — the scan | Scans **every** employer in the list, native and added | 08:00 daily, fixed |
-| `97a3b6424e58`-style hunt | Finds employers that are **not** in the list yet and installs the readable ones | every 30 min, but only when the dashboard switch is on *and* the cooldown (6 h) has passed |
+| `cbf26d448432` — the hunt | Finds employers that are **not** in the list yet and installs the readable ones | every 30 min, but only when the dashboard switch is on *and* the cooldown (6 h) has passed |
 
 The dashboard owns exactly one switch: **"looking for new employers"**. It does not re-scan
 employers you already watch — that is still one fixed daily run, so the list never gets hammered.
