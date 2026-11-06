@@ -7,12 +7,15 @@ Runs via Camofox (local anti-detect browser on :9377) because Penn Medicine and
 several other ATS fronts are Cloudflare-protected.
 
 Modes
-  (default)      check sources, print alert text for NEW + relevant jobs, else print nothing
+  (default)      scan every source once, print alert text for NEW + relevant jobs, else nothing
   --baseline     record everything currently live, alert nothing
   --selftest     run the relevance filter against a labelled corpus, print pass/fail
   --backfill-posted  read posted dates off detail pages for known jobs that lack one
   --discover     fill the "sites we do not scrape yet" queue from known postings
-  --gate         scan only when the dashboard says so (paused / interval / "scan now")
+  --probe-source URL  is this board worth adding? prints JSON (--add installs it when it is)
+  --add-source JSON   install an extra source under ~/.hermes/job-watches/sources.d/
+  --drop-source SLUG  stop watching an extra source
+  --list-sources      every source this run will scan, native and extra
   --dump         print every posting that passed/didn't pass the filter (debug)
   --resimulate N drop N random seen keys so they re-alert (validation only)
 
@@ -26,8 +29,10 @@ import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -170,47 +175,18 @@ def scanner_version() -> str:
         return "unknown"
 
 
-def watch_state() -> dict:
-    """The scanning knobs the dashboard owns: on/off, interval, and any pending "scan now".
+def discovery_state() -> dict:
+    """Whether the board wants the employer hunt to keep running.
 
-    Returns {} when the board is unreachable, which callers treat as "carry on" so a dashboard
-    outage never stops the scheduled scan.
+    Returns {} when the board is unreachable, which the hunt treats as "not now": a dashboard
+    outage must not spend money on an LLM run nobody asked for.
     """
     if not WEB_URL:
         return {}
     try:
-        return _http_json("GET", WEB_URL + "/api/watch", timeout=15) or {}
+        return _http_json("GET", WEB_URL + "/api/discover", timeout=15) or {}
     except Exception:
         return {}
-
-
-def clear_scan_request() -> None:
-    if not WEB_URL:
-        return
-    try:
-        _http_json("POST", WEB_URL + "/api/watch", {"clearRequest": True}, timeout=15)
-    except Exception:
-        pass
-
-
-def scan_is_due(state: dict, st: dict, gate: bool) -> tuple:
-    """"(should_scan, why)" from the dashboard knobs, never raises."""
-    if not state:
-        # No answer from the board: a scheduled run carries on, a gate run does nothing.
-        return (not gate, "board unreachable")
-    if not state.get("enabled", True):
-        return (False, "paused on the dashboard")
-    if state.get("requestedAt"):
-        return (True, "requested from the dashboard")
-    if not gate:
-        return (True, "scheduled run")
-    interval = state.get("intervalMin", 120)
-    if not interval:
-        return (False, "interval 0: only when asked")
-    last = st.get("last_run")
-    if _age_hours(last) * 60.0 >= interval:
-        return (True, "%.0f min since the last scan" % (_age_hours(last) * 60.0))
-    return (False, "last scan was %.0f min ago" % (_age_hours(last) * 60.0))
 
 
 def push_snapshot(relevant_jobs: dict, run_at: str, full: bool = True) -> str:
@@ -1098,6 +1074,299 @@ SOURCES = [
 
 
 # --------------------------------------------------------------------------
+# Extra sources: employers added after the fact, without editing this file.
+#
+# A new employer on an applicant tracking system we already speak (Workday, UKG, NEOGOV,
+# Phenom) needs no new code, only configuration: which board URL, which parser, which wait.
+# Those live as JSON in ~/.hermes/job-watches/sources.d/ and are loaded here, so the daily run
+# scans them exactly like the hand-written ones. JSON cannot carry code, so `parse` and
+# `extract` name entries in the whitelists below - an unknown name is rejected, not executed.
+# --------------------------------------------------------------------------
+EXTRA_SOURCES_DIR = STATE_DIR / "sources.d"
+
+# Anything wrong with a sources.d file, reported as a health warning rather than as alert text.
+EXTRA_SOURCE_PROBLEMS = []
+
+PARSERS = {
+    "workday": parse_jefferson,          # Workday puts city+state and title in the URL path
+    "jefferson": parse_jefferson,
+    "ukg": parse_phmc,                   # UKG cards: title in a ukg-link, city in the address
+    "phmc": parse_phmc,
+    "neogov": parse_govjobs,
+    "govjobs": parse_govjobs,
+    "phenom": parse_amerihealth,
+    "amerihealth": parse_amerihealth,
+    "wellspan": parse_wellspan,
+    "christianacare": parse_christianacare,
+    "tower": parse_tower,
+    "penn": parse_penn,
+    "mainline": parse_mainline,
+    "upmc": parse_upmc,
+}
+
+EXTRACTS = {
+    "auto": None,                        # plain anchors, the default EXTRACT_JS
+    "ukg": PHMC_EXTRACT_JS,
+    "phenom": AH_EXTRACT_JS,
+    "workday": None,
+}
+
+# ATS -> (parser, extractor) for the platforms whose boards we already know how to read.
+PLATFORMS = {
+    "workday": ("workday", "auto"),
+    "ukg": ("ukg", "ukg"),
+    "neogov": ("neogov", "auto"),
+    "phenom": ("phenom", "phenom"),
+}
+
+
+def load_extra_sources() -> list:
+    """Read sources.d/*.json into source dicts, skipping anything malformed. Never raises.
+
+    Problems are collected rather than printed: this runs at import, and stdout of a run is the
+    alert, so a stray line here would page him about a typo.
+    """
+    if not EXTRA_SOURCES_DIR.is_dir():
+        return []
+    out = []
+    for path in sorted(EXTRA_SOURCES_DIR.glob("*.json")):
+        try:
+            spec = json.loads(path.read_text())
+        except Exception as e:
+            EXTRA_SOURCE_PROBLEMS.append("%s is not valid JSON (%s) - ignored"
+                                         % (path.name, str(e)[:60]))
+            continue
+        if not isinstance(spec, dict) or spec.get("enabled") is False:
+            continue
+        name = str(spec.get("name") or "").strip()
+        parse_name = str(spec.get("parse") or "").strip()
+        extract_name = str(spec.get("extract") or "auto").strip()
+        urls = spec.get("urls") or []
+        pag = spec.get("paginate")
+        base = str(spec.get("base") or "").strip()
+        if not name or parse_name not in PARSERS or extract_name not in EXTRACTS:
+            EXTRA_SOURCE_PROBLEMS.append("%s: unknown parse/extract (%r/%r) - ignored"
+                                         % (path.name, parse_name, extract_name))
+            continue
+        if not (urls or pag):
+            EXTRA_SOURCE_PROBLEMS.append("%s: no urls - ignored" % path.name)
+            continue
+        if not base and urls:
+            base = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(urls[0]))
+        src = {
+            "name": name,
+            "base": base,
+            "parse": PARSERS[parse_name],
+            "urls": [u for u in urls if isinstance(u, str)],
+            "extra": True,
+            "slug": path.stem,
+        }
+        if EXTRACTS[extract_name]:
+            src["extract_js"] = EXTRACTS[extract_name]
+        if isinstance(pag, dict) and pag.get("pattern"):
+            src["paginate"] = pag
+        for key in ("wait", "default_location"):
+            if spec.get(key) is not None:
+                src[key] = spec[key]
+        also = [a for a in (spec.get("also") or []) if isinstance(a, str)]
+        if also:
+            src["also"] = also
+        out.append(src)
+    return out
+
+
+EXTRA_SOURCES = load_extra_sources()
+SOURCES.extend(EXTRA_SOURCES)
+
+
+# --------------------------------------------------------------------------
+# Probing and adding a source: the whole "find new employers" loop.
+#
+# A proposal is not believed until a real page load agrees with it. The probe fetches the board,
+# counts postings and names the ATS, so a hallucinated or stale careers URL dies here instead of
+# taking a slot in tomorrow's scan. Only a board on an ATS we already read becomes a source
+# entry; anything else is reported for someone to write a parser for.
+# --------------------------------------------------------------------------
+def _arg_value(args: list, flag: str) -> str:
+    """Value after --flag, or "" when absent."""
+    if flag in args:
+        i = args.index(flag)
+        if i + 1 < len(args):
+            return args[i + 1]
+    for a in args:
+        if a.startswith(flag + "="):
+            return a.split("=", 1)[1]
+    return ""
+
+
+def _origin(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    return "%s://%s" % (parts.scheme, parts.netloc) if parts.netloc else ""
+
+
+def platform_of(url: str, hrefs=()) -> str:
+    """Which applicant tracking system a board runs on, from its URL and the links it emitted."""
+    blob = " ".join([url] + [str(h) for h in list(hrefs)[:15]]).lower()
+    for needle, platform in (
+        ("myworkdayjobs.com", "workday"), ("myworkdaysite.com", "workday"),
+        ("ultipro.com", "ukg"), ("ukg.com", "ukg"),
+        ("governmentjobs.com", "neogov"), ("neogov.com", "neogov"),
+        ("phenompeople.com", "phenom"), ("/us/en/job/", "phenom"),
+        ("icims.com", "icims"), ("taleo.net", "taleo"),
+        ("greenhouse.io", "greenhouse"), ("lever.co", "lever"),
+        ("smartrecruiters.com", "smartrecruiters"), ("paycomonline.net", "paycom"),
+        ("dayforcehcm.com", "dayforce"), ("bamboohr.com", "bamboohr"),
+        ("workable.com", "workable"), ("jobvite.com", "jobvite"),
+        ("successfactors.com", "successfactors"),
+    ):
+        if needle in blob:
+            return platform
+    return "unknown"
+
+
+def _name_from_url(url: str) -> str:
+    """Best-effort employer name from a board URL (careers.acme.org -> Acme)."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    labels = [l for l in host.split(".") if l not in ("www", "careers", "career", "jobs", "job",
+                                                      "recruiting", "apply", "hire")]
+    if labels:
+        return labels[0].replace("-", " ").title()
+    return host or "New source"
+
+
+def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "") -> dict:
+    """Fetch one candidate board and report whether it is worth adding. Never raises."""
+    res = {"url": url, "ok": False, "platform": "unknown", "postings": 0,
+           "sample": [], "error": None, "source": None}
+    platform = platform_of(url)
+    extract = PLATFORMS.get(platform, ("", "auto"))[1] if platform in PLATFORMS else "auto"
+    best = None
+    for attempt in ((EXTRACTS[extract], extract), (None, "auto")):
+        try:
+            raw = fetch_jobs(url, wait=wait, extract_js=attempt[0])
+        except Exception as e:
+            res["error"] = str(e)[:160]
+            continue
+        rows = [r for r in (raw or []) if isinstance(r, dict) and r.get("h")]
+        if best is None or len(rows) > len(best[0]):
+            best = (rows, attempt[1])
+        if len(rows) >= 5:
+            break
+        time.sleep(1.5)
+    if best is None:
+        return res
+    rows, used_extract = best
+    res["postings"] = len(rows)
+    res["sample"] = [str(r.get("t") or "")[:80] for r in rows[:5]]
+    res["platform"] = platform_of(url, [r.get("h") for r in rows])
+    parser, extract_for = PLATFORMS.get(res["platform"], ("", used_extract))
+    res["ok"] = bool(res["postings"] >= 5 and parser)
+    res["source"] = {
+        "name": name or _name_from_url(url),
+        "base": _origin(url),
+        "parse": parser or None,
+        "extract": extract_for,
+        "urls": [url],
+        "wait": wait,
+    }
+    if location:
+        res["source"]["default_location"] = location
+    return res
+
+
+def add_source(spec: dict) -> tuple:
+    """Validate and install a source entry. Returns (ok, message)."""
+    if not isinstance(spec, dict):
+        return False, "not an object"
+    name = str(spec.get("name") or "").strip()
+    parse_name = str(spec.get("parse") or "").strip()
+    extract_name = str(spec.get("extract") or "auto").strip()
+    urls = [u for u in (spec.get("urls") or []) if isinstance(u, str)]
+    if not name:
+        return False, "name is required"
+    if parse_name not in PARSERS:
+        return False, "parse must be one of: %s" % ", ".join(sorted(PARSERS))
+    if extract_name not in EXTRACTS:
+        return False, "extract must be one of: %s" % ", ".join(sorted(EXTRACTS))
+    if not urls and not spec.get("paginate"):
+        return False, "urls or paginate is required"
+    for s in SOURCES:
+        if s.get("name", "").lower() == name.lower():
+            return False, "%r is already a source" % name
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "source"
+    path = EXTRA_SOURCES_DIR / (slug + ".json")
+    entry = {
+        "name": name,
+        "base": str(spec.get("base") or (_origin(urls[0]) if urls else "")).strip(),
+        "parse": parse_name,
+        "extract": extract_name,
+        "urls": urls,
+        "added_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    for key in ("wait", "default_location", "also", "paginate"):
+        if spec.get(key) is not None:
+            entry[key] = spec[key]
+    EXTRA_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entry, indent=2) + "\n")
+    return True, str(path)
+
+
+def drop_source(slug: str) -> bool:
+    path = EXTRA_SOURCES_DIR / (re.sub(r"[^a-z0-9-]+", "", slug.lower()) + ".json")
+    try:
+        path.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def extra_source_rows() -> list:
+    """What the board shows under "watching, added over time"."""
+    rows = []
+    for src in EXTRA_SOURCES:
+        rows.append({
+            "slug": src.get("slug"),
+            "name": src.get("name"),
+            "url": (src.get("urls") or [""])[0],
+            "parse": next((k for k, v in PARSERS.items() if v is src["parse"]), "?"),
+        })
+    return rows
+
+
+def reload_extra_sources() -> None:
+    """Re-read sources.d in place, so a source dropped from the board leaves this run too."""
+    global EXTRA_SOURCES
+    SOURCES[:] = [s for s in SOURCES if not s.get("extra")]
+    EXTRA_SOURCES = load_extra_sources()
+    SOURCES.extend(EXTRA_SOURCES)
+    KNOWN_SITE_HOSTS.clear()
+    KNOWN_SITE_HOSTS.update({site_host(s["base"]) for s in SOURCES if s.get("base")})
+    for s in SOURCES:
+        for h in s.get("also") or ():
+            KNOWN_SITE_HOSTS.add(site_host(h))
+    KNOWN_ORG_KEYS.clear()
+    KNOWN_ORG_KEYS.update({org_key(h) for h in KNOWN_SITE_HOSTS})
+
+
+def sync_source_drops() -> list:
+    """Delete any extra source the board asked us to stop watching. Returns the slugs removed."""
+    if not WEB_URL:
+        return []
+    try:
+        state = _http_json("GET", WEB_URL + "/api/discover", timeout=15) or {}
+    except Exception:
+        return []
+    drops = [d for d in (state.get("sourceDrops") or []) if isinstance(d, str)]
+    removed = [d for d in drops if drop_source(d)]
+    if drops:
+        try:
+            _http_json("POST", WEB_URL + "/api/discover", {"clearDrops": drops}, timeout=15)
+        except Exception:
+            pass
+    return removed
+
+
+# --------------------------------------------------------------------------
 # Source discovery: the queue behind "the app improves over time".
 #
 # Every detail page we open is full of links, and the ones that leave the board are usually the
@@ -1235,23 +1504,29 @@ def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
 
 
 def push_candidates(st: dict, run_at: str) -> str:
-    """Send the queue to the board. Cheap enough to send in full every run: it is one row each."""
+    """Send the discovery queue and the extra sources to the board.
+
+    Cheap enough to send in full every run: the queue is at most 60 rows and the extra sources
+    are a handful, and the board is the only place he can see or undo them.
+    """
     if not WEB_URL or not WEB_TOKEN:
         return "skipped (no web credentials)"
     queue = st.get("candidates") or {}
-    if not queue:
+    if not queue and not EXTRA_SOURCES:
         return "skipped (nothing discovered)"
     rows = [{"host": h, "first_seen": v.get("first"), "last_seen": v.get("last"),
              "seen_count": v.get("n", 1), "sample_url": v.get("url"),
              "sample_title": v.get("title"), "employer": v.get("employer")}
             for h, v in sorted(queue.items())]
+    body = {"run_at": run_at, "candidates": rows, "extra": extra_source_rows()}
     try:
-        _http_json("POST", WEB_URL + "/api/sources/discover",
-                   {"run_at": run_at, "candidates": rows},
+        _http_json("POST", WEB_URL + "/api/sources/discover", body,
                    {"x-ingest-token": WEB_TOKEN}, timeout=60)
     except Exception as e:
         return "FAILED: %s" % str(e)[:120]
-    return "ok (%d candidate%s)" % (len(rows), "" if len(rows) == 1 else "s")
+    return "ok (%d candidate%s, %d extra source%s)" % (
+        len(rows), "" if len(rows) == 1 else "s",
+        len(EXTRA_SOURCES), "" if len(EXTRA_SOURCES) == 1 else "s")
 
 
 # --------------------------------------------------------------------------
@@ -1728,24 +2003,6 @@ def _boundary_selftest() -> int:
         # The dashboard gate: what decides whether the Pi scrapes at all.
         fresh = {"last_run": now_iso()}
         old = {"last_run": "2020-01-01T00:00:00Z"}
-        gate_cases = [
-            ("paused", {"enabled": False}, old, False, False),
-            ("paused gate", {"enabled": False}, old, True, False),
-            ("requested", {"enabled": True, "requestedAt": "x", "intervalMin": 999},
-             fresh, True, True),
-            ("scheduled", {"enabled": True, "intervalMin": 120}, fresh, False, True),
-            ("too soon", {"enabled": True, "intervalMin": 120}, fresh, True, False),
-            ("interval elapsed", {"enabled": True, "intervalMin": 120}, old, True, True),
-            ("only on demand", {"enabled": True, "intervalMin": 0}, old, True, False),
-            ("board down, sched", {}, old, False, True),
-            ("board down, gate", {}, old, True, False),
-        ]
-        for label, watch, state, gate, want in gate_cases:
-            got = scan_is_due(watch, state, gate)[0]
-            ok = got == want
-            if not ok:
-                fails += 1
-            print("%-6s %-20s -> scan=%s" % ("PASS" if ok else "FAIL", label, got))
     finally:
         geocode, snap_point, route_summary = saved
     return fails
@@ -2267,6 +2524,59 @@ def selftest() -> int:
             sfails += 1
         print("%-6s %-24s -> %r" % ("PASS" if ok else "FAIL", name, got))
 
+    print("\n--- employer hunt plumbing (probe, add, drop) ---")
+    hcases2 = []
+    for url, want in [
+        ("https://acme.wd1.myworkdayjobs.com/External", "workday"),
+        ("https://recruiting.ultipro.com/PUB1/JobBoard/x", "ukg"),
+        ("https://www.governmentjobs.com/careers/foo", "neogov"),
+        ("https://careers.foo.org/us/en/job/123/x", "phenom"),
+        ("https://foo.my.salesforce-sites.com/jobs", "unknown"),
+    ]:
+        got = platform_of(url)
+        hcases2.append(("platform %s" % want, got == want, got))
+    hcases2.append(("name from url", _name_from_url("https://careers.acme-health.org/x") == "Acme Health",
+                    _name_from_url("https://careers.acme-health.org/x")))
+    # The probe's own refusals: a spec that cannot be scanned must not reach sources.d.
+    hcases2.append(("reject unknown parser",
+                    add_source({"name": "X", "parse": "curl", "urls": ["https://x.test"]})[0] is False,
+                    "parse must be one of"))
+    hcases2.append(("reject no urls",
+                    add_source({"name": "Y", "parse": "govjobs"})[0] is False, "urls required"))
+    hcases2.append(("reject duplicate",
+                    add_source({"name": "Penn Medicine", "parse": "govjobs",
+                                "urls": ["https://x.test"]})[0] is False, "already a source"))
+    saved_dir = EXTRA_SOURCES_DIR
+    tmp = Path(tempfile.mkdtemp(prefix="jw-sources-"))
+    try:
+        globals()["EXTRA_SOURCES_DIR"] = tmp
+        ok_add, msg = add_source({"name": "Test Health", "parse": "ukg", "extract": "ukg",
+                                  "urls": ["https://jobs.testhealth.org/search"], "wait": 9})
+        hcases2.append(("add writes file", ok_add and (tmp / "test-health.json").exists(), msg))
+        loaded = load_extra_sources()
+        hcases2.append(("load maps parser",
+                        bool(loaded) and loaded[0]["parse"] is PARSERS["ukg"]
+                        and loaded[0]["extract_js"] == EXTRACTS["ukg"]
+                        and loaded[0]["wait"] == 9,
+                        loaded[0]["name"] if loaded else None))
+        hcases2.append(("slug from filename",
+                        bool(loaded) and loaded[0]["slug"] == "test-health",
+                        loaded[0]["slug"] if loaded else None))
+        # A hand-broken file must be ignored, not crash the run.
+        (tmp / "broken.json").write_text("{not json")
+        hcases2.append(("broken file ignored", len(load_extra_sources()) == 1,
+                        len(load_extra_sources())))
+        hcases2.append(("drop removes file", drop_source("test-health")
+                        and not (tmp / "test-health.json").exists(), "dropped"))
+    finally:
+        globals()["EXTRA_SOURCES_DIR"] = saved_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+    hfails2 = 0
+    for name, ok, got in hcases2:
+        if not ok:
+            hfails2 += 1
+        print("%-6s %-26s -> %r" % ("PASS" if ok else "FAIL", name, got))
+
     print("\n--- one scan at a time ---")
     try:
         import fcntl  # noqa: F401
@@ -2295,15 +2605,15 @@ def selftest() -> int:
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
           "%d penn failures, %d posted failures, %d location failures, %d map failures, "
           "%d boundary failures, %d discovery failures, %d lock failures, %d phmc failures, "
-          "%d cases total"
+          "%d hunt failures, %d cases total"
           % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails, sfails,
-             lkfails, hfails,
+             lkfails, hfails, hfails2,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
              + len(dcases) + len(bcases) + len(lcases) + len(mcases) + len(scases)
-             + len(lk_cases) + len(hcases) + 8))
+             + len(lk_cases) + len(hcases) + len(hcases2) + 8))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
                  and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0
-                 and sfails == 0 and lkfails == 0 and hfails == 0) else 1
+                 and sfails == 0 and lkfails == 0 and hfails == 0 and hfails2 == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -3002,6 +3312,51 @@ def main() -> int:
     if "--selftest" in args:
         return selftest()
 
+    # Employer discovery: probe a board, add it, drop it, list what is watched.
+    if "--probe-source" in args:
+        url = _arg_value(args, "--probe-source")
+        if not url:
+            print("usage: --probe-source <board-url> [--name X] [--location 'City, ST']")
+            return 2
+        res = probe_source(url, wait=float(_arg_value(args, "--wait") or 10.0),
+                           name=_arg_value(args, "--name"),
+                           location=_arg_value(args, "--location"))
+        print(json.dumps(res, indent=2))
+        if "--add" in args and res.get("ok"):
+            ok, msg = add_source(res["source"])
+            print(("added: %s" % msg) if ok else ("NOT added: %s" % msg), file=sys.stderr)
+            return 0 if ok else 1
+        return 0 if res.get("ok") or "--allow-fail" in args else 1
+    if "--add-source" in args:
+        raw = _arg_value(args, "--add-source")
+        if raw == "-" or not raw:
+            raw = sys.stdin.read()
+        try:
+            spec = json.loads(raw)
+        except Exception as e:
+            print("not valid JSON: %s" % str(e)[:120])
+            return 2
+        ok, msg = add_source(spec)
+        print(("added: %s" % msg) if ok else ("NOT added: %s" % msg))
+        return 0 if ok else 1
+    if "--drop-source" in args:
+        slug = _arg_value(args, "--drop-source")
+        ok = drop_source(slug)
+        print(("dropped: %s" % slug) if ok else ("no such source: %s" % slug))
+        return 0 if ok else 1
+    if "--list-sources" in args:
+        d = load_state()
+        health = d.get("source_health", {})
+        for s in SOURCES:
+            h = health.get(s["name"], {})
+            print("%-22s %-9s %-45s last=%-4s peak=%-4s %s"
+                  % (s["name"][:22], "extra" if s.get("extra") else "native",
+                     (s.get("urls") or [(s.get("paginate") or {}).get("pattern", "")])[0][:45],
+                     h.get("last", "?"), h.get("peak", "?"), " ".join(s.get("also") or [])))
+        for p in EXTRA_SOURCE_PROBLEMS:
+            print("PROBLEM:", p)
+        return 0
+
     st = load_state()
     if "--backfill-posted" in args:
         return backfill_posted(st)
@@ -3016,21 +3371,17 @@ def main() -> int:
     if "--discover" in args:
         return discover_sources(st)
 
-    # The dashboard owns "is scanning on", how often, and whether a scan was asked for. Read it
-    # before any scraping, so switching it off costs one HTTP GET and no page loads.
-    watch = watch_state()
-    gate = "--gate" in args
-    due, why = scan_is_due(watch, st, gate)
-    if not due:
-        # Silent by design: a paused or not-yet-due tick must send nothing and log nothing.
-        return 0
+    # The board owns one thing now: whether to keep hunting for new employers. It can also ask
+    # for an extra source to be dropped, which is a real change to what this run scans.
+    if sync_source_drops():
+        reload_extra_sources()
+
+    # One trigger, one scan: the daily cron runs this and every source is scraped. The lock is
+    # only there to stop a hand-run from overlapping the cron.
     if not acquire_run_lock():
-        # Another scan is still running (the gate ticks every 5 min, a scan takes ~15).
-        if gate and "--verbose" in args:
-            print("job watch: skipping, another scan is running")
+        if "--verbose" in args:
+            print("job watch: skipping, another scan is already running")
         return 0
-    if gate and "--verbose" in args:
-        print("job watch: scanning (%s)" % why)
 
     found, errors = collect(st.get("source_health", {}))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -3212,11 +3563,8 @@ def main() -> int:
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
-    if st.get("candidates"):
+    if st.get("candidates") or EXTRA_SOURCES:
         st["web_sync_sources"] = push_candidates(st, now)
-    if watch.get("requestedAt"):
-        # This run was the one asked for; drop the request so the gate does not repeat it.
-        clear_scan_request()
     save_state(st)
 
     if not new_keys:

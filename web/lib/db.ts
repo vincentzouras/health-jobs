@@ -253,32 +253,88 @@ export function jobId(employer: string, jobKey: string): string {
 }
 
 /**
- * The Pi's scanning knobs, kept in the same `meta` table the scanner already reports to.
- * The Pi reads them at the start of every run, so changing one here takes effect on the next
- * tick without touching the Pi (or the cron).
+ * The one thing the dashboard still owns: keep hunting for new employers, or not.
+ *
+ * Scanning the employer list is a single fixed trigger (the daily cron) - the toggle here is
+ * purely about spending effort finding boards that are not watched yet.
  */
-export interface WatchState {
-  /** false = the scanner exits immediately and stays silent. */
-  enabled: boolean;
-  /** Minutes the gate waits between scans; 0 means "only when asked". */
-  intervalMin: number;
-  /** ISO stamp set by "Scan now", cleared by the run that honours it. */
-  requestedAt: string | null;
+export interface ExtraSource {
+  /** File name under ~/.hermes/job-watches/sources.d/, which is also how it gets removed. */
+  slug: string;
+  name: string;
+  url: string;
+  /** Which parser reads it (workday, ukg, neogov, phenom, ...). */
+  parse: string;
 }
 
-export const WATCH_DEFAULTS: WatchState = { enabled: true, intervalMin: 120, requestedAt: null };
+export interface DiscoveryState {
+  enabled: boolean;
+  lastHuntAt: string | null;
+  lastHuntAdded: number | null;
+  /** Sources added since the hand-written list: scanned by the same daily run. */
+  extra: ExtraSource[];
+  /** Slugs the human removed here; the Pi deletes the files on its next run. */
+  sourceDrops: string[];
+}
 
-export async function getWatchState(): Promise<WatchState> {
+export const DISCOVERY_DEFAULTS: DiscoveryState = {
+  enabled: false,
+  lastHuntAt: null,
+  lastHuntAdded: null,
+  extra: [],
+  sourceDrops: [],
+};
+
+function parseJson<T>(value: unknown, fallback: T): T {
+  if (typeof value !== 'string' || !value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function getDiscoveryState(): Promise<DiscoveryState> {
   const { rows } = await pool().query(
-    `SELECT key, value FROM meta WHERE key IN ('watch_enabled','scan_interval_min','scan_requested')`,
+    `SELECT key, value FROM meta
+      WHERE key IN ('discovery_enabled','discovery_last','discovery_added',
+                    'extra_sources','source_drops')`,
   );
   const m = Object.fromEntries(rows.map((r) => [String(r.key), r.value as string]));
-  const interval = Number(m.scan_interval_min);
+  const added = Number(m.discovery_added);
   return {
-    enabled: m.watch_enabled === undefined ? WATCH_DEFAULTS.enabled : m.watch_enabled === '1',
-    intervalMin: Number.isFinite(interval) ? interval : WATCH_DEFAULTS.intervalMin,
-    requestedAt: m.scan_requested || null,
+    enabled: m.discovery_enabled === '1',
+    lastHuntAt: m.discovery_last || null,
+    lastHuntAdded: Number.isFinite(added) ? added : null,
+    extra: parseJson<ExtraSource[]>(m.extra_sources, []),
+    sourceDrops: parseJson<string[]>(m.source_drops, []),
   };
+}
+
+export async function setDiscoveryEnabled(on: boolean): Promise<void> {
+  await setMeta('discovery_enabled', on ? '1' : '0');
+}
+
+export async function setExtraSources(rows: ExtraSource[]): Promise<void> {
+  await setMeta('extra_sources', JSON.stringify(rows.slice(0, 40)));
+}
+
+export async function recordHunt(at: string, added: number): Promise<void> {
+  await setMeta('discovery_last', at);
+  await setMeta('discovery_added', String(added));
+}
+
+/** Queue a removal; the Pi polls for these at the top of its next run. */
+export async function requestSourceDrop(slug: string): Promise<void> {
+  const { sourceDrops } = await getDiscoveryState();
+  const next = Array.from(new Set([...sourceDrops, slug])).slice(0, 40);
+  await setMeta('source_drops', JSON.stringify(next));
+}
+
+export async function clearSourceDrops(slugs: string[]): Promise<void> {
+  const { sourceDrops } = await getDiscoveryState();
+  const done = new Set(slugs);
+  await setMeta('source_drops', JSON.stringify(sourceDrops.filter((s) => !done.has(s))));
 }
 
 export async function setMeta(key: string, value: string): Promise<void> {

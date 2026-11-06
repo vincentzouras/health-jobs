@@ -20,7 +20,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import type { Job, SourceCandidate, Status } from '@/lib/db';
+import type { DiscoveryState, Job, SourceCandidate, Status } from '@/lib/db';
 import { AREA_LABEL, type Area } from '@/lib/areas';
 import { employerColor, type EmployerColor } from './employerColor';
 import RouteMap from './RouteMap';
@@ -36,8 +36,8 @@ interface ApiPayload {
     mapOrigin: string | null;
     /** Rows that fell outside the 50 minute boundary and are hidden. */
     retired: number;
-    /** Scanning knobs owned by the dashboard: the Pi reads them every run. */
-    watch: { enabled: boolean; intervalMin: number; requestedAt: string | null };
+    /** Whether the employer hunt keeps running, and what it has added. */
+    discovery: DiscoveryState;
     db: boolean;
   };
   error?: string;
@@ -318,8 +318,21 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [mounted, setMounted] = useState(false);
   const [dismissing, setDismissing] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState('');
-  const [watch, setWatch] = useState(initial.meta.watch);
+  const [watch, setWatch] = useState(initial.meta.discovery);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const setDiscovery = useCallback(async (body: { enabled?: boolean; dropSource?: string }) => {
+    try {
+      const res = await fetch('/api/discover', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) setWatch((await res.json()) as DiscoveryState);
+    } catch {
+      /* the switch will simply show the old state */
+    }
+  }, []);
 
   const setSourceAction = useCallback(
     async (host: string, action: 'watch' | 'dismiss' | 'reset') => {
@@ -335,22 +348,6 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
         }
       } catch {
         /* the row simply keeps its old state */
-      }
-    },
-    [],
-  );
-
-  const setWatchMode = useCallback(
-    async (body: { enabled?: boolean; intervalMin?: number; requestScan?: boolean }) => {
-      try {
-        const res = await fetch('/api/watch', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.ok) setWatch((await res.json()) as typeof watch);
-      } catch {
-        /* the switch will simply show the old state */
       }
     },
     [],
@@ -520,67 +517,79 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             Within a 50 minute drive of York or West Chester
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {!watch.enabled
-              ? 'Scanning is paused'
-              : watch.intervalMin
-                ? `Scanning every ${watch.intervalMin >= 60
-                    ? `${Math.round((watch.intervalMin / 60) * 10) / 10} hr`
-                    : `${watch.intervalMin} min`}`
-                : 'Scanning only when asked'}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Last checked {rel(data.meta.lastIngest)}
+            Scanned once a day — last checked {rel(data.meta.lastIngest)}
             {data.meta.scannerVersion && ` · scanner ${data.meta.scannerVersion}`}
             {data.meta.retired > 0 && ` · ${data.meta.retired} dropped as out of range`}
           </Typography>
         </Stack>
 
         <Paper variant="outlined" sx={{ p: 2 }}>
-          <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-              <Switch
-                checked={watch.enabled}
-                onChange={(e) => void setWatchMode({ enabled: e.target.checked })}
-                slotProps={{ input: { 'aria-label': 'Keep scanning for new jobs' } }}
-              />
-              <Box>
-                <Typography variant="body2">{watch.enabled ? 'Scanning is on' : 'Scanning is paused'}</Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {watch.enabled
-                    ? `The Pi checks every ${watch.intervalMin ? `${watch.intervalMin} min` : '— on demand only'}`
-                    : 'The Pi stops before opening any browser page'}
-                </Typography>
-              </Box>
+          <Stack spacing={1}>
+            <Stack
+              direction="row"
+              spacing={2}
+              useFlexGap
+              sx={{ flexWrap: 'wrap', alignItems: 'center' }}
+            >
+              <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                <Switch
+                  checked={watch.enabled}
+                  onChange={(e) => void setDiscovery({ enabled: e.target.checked })}
+                  slotProps={{ input: { 'aria-label': 'Keep looking for new employers' } }}
+                />
+                <Box>
+                  <Typography variant="body2">
+                    {watch.enabled ? 'Looking for new employers' : 'Not looking for new employers'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {watch.enabled
+                      ? 'A Hermes agent finds employers in the two 50 minute areas and probes their boards'
+                      : 'Only the employers below are scanned'}
+                  </Typography>
+                </Box>
+              </Stack>
+              <Box sx={{ flex: 1 }} />
+              <Typography variant="caption" color="text.secondary">
+                Last hunt {rel(watch.lastHuntAt)}
+                {watch.lastHuntAdded !== null && ` · ${watch.lastHuntAdded} added`}
+              </Typography>
             </Stack>
-            <TextField
-              select
-              size="small"
-              label="Check every"
-              value={String(watch.intervalMin)}
-              onChange={(e) => void setWatchMode({ intervalMin: Number(e.target.value) })}
-              disabled={!watch.enabled}
-              sx={{ minWidth: 150 }}
-            >
-              <MenuItem value="30">30 minutes</MenuItem>
-              <MenuItem value="60">1 hour</MenuItem>
-              <MenuItem value="120">2 hours</MenuItem>
-              <MenuItem value="240">4 hours</MenuItem>
-              <MenuItem value="0">On demand only</MenuItem>
-            </TextField>
-            <Box sx={{ flex: 1 }} />
-            <Button
-              variant="outlined"
-              onClick={() => void setWatchMode({ requestScan: true, enabled: true })}
-              disabled={!!watch.requestedAt}
-            >
-              {watch.requestedAt ? 'Scan queued' : 'Scan now'}
-            </Button>
-          </Stack>
-          {watch.requestedAt && (
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-              Queued — the Pi picks it up within 5 minutes.
+
+            <Divider />
+
+            <Typography variant="caption" color="text.secondary">
+              Scanned every morning at 8:00
+              {watch.extra.length > 0
+                ? ` — ${watch.extra.length} employer${watch.extra.length === 1 ? '' : 's'} added since`
+                : ' — the employers in the list'}
             </Typography>
-          )}
+            {watch.extra.map((s) => (
+              <Stack
+                key={s.slug}
+                direction="row"
+                spacing={1}
+                useFlexGap
+                sx={{ alignItems: 'center', flexWrap: 'wrap' }}
+              >
+                <Typography variant="body2">{s.name}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                  {s.parse} · {s.url}
+                </Typography>
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => void setDiscovery({ dropSource: s.slug })}
+                >
+                  Stop
+                </Button>
+              </Stack>
+            ))}
+            {watch.sourceDrops.length > 0 && (
+              <Typography variant="caption" color="text.secondary">
+                Removing {watch.sourceDrops.join(', ')} on the next run.
+              </Typography>
+            )}
+          </Stack>
         </Paper>
 
         {data.candidates?.length > 0 && (

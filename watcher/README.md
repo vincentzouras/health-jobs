@@ -56,23 +56,29 @@ regexes, and `--selftest` is what protects them.
 PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 
 $PY job_watch.py             # normal run — silent unless something is new
-$PY job_watch.py --gate      # scan only if the dashboard says so (paused / interval / scan now)
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 179 filter + parser + gate + discovery tests; run after ANY rule change
+$PY job_watch.py --selftest  # 205 filter + parser + discovery + hunt tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
 $PY job_watch.py --backfill-maps     # resolve route cards for postings that lack one
 $PY job_watch.py --discover          # fill the "sites we do not scrape yet" queue from the board
+$PY job_watch.py --list-sources      # native + added sources, with health
+$PY job_watch.py --probe-source URL [--name X]   # is this board worth adding? prints JSON
+$PY job_watch.py --probe-source URL --name X --add   # ...and install it when it passed
+$PY job_watch.py --add-source '<json>'           # install straight from a probe's "source"
+$PY job_watch.py --drop-source <slug>            # stop watching an added source
 $PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
 $PY job_watch.py --check-maps        # prove ORS_KEY end to end (geocode, snap, route)
 ```
 
-`--gate` is what the 5-minute cron runs. It costs one HTTP GET and exits in under a second when the
-dashboard says paused, too soon, or on-demand-only; otherwise it does a full scan. `--discover`
-walks detail pages of postings already on file (25 by default) and records any job host that is not
-one of the 11 sources, so the queue on the board fills without waiting for new postings.
+Scanning is one fixed daily trigger (`hunt-employers.sh` does not scan, and neither does anything
+else). The only thing the dashboard switches is the **employer hunt**: propose employers we do not
+watch, probe their boards, install the ones on an ATS we already read as `sources.d/<slug>.json`.
+`--probe-source` is the gate that makes that safe — a board is only added when a real page load
+finds at least five postings on a platform with a known parser. `--discover` (outbound links from
+detail pages we already open) is the passive counterpart and costs no extra page loads.
 
 Discovery is filtered or it is useless. A registrable domain is the unit (`careers.foo.org` and
 `foo.org` are one entry), `LINK_NOISE` drops analytics/CDN/social/webmail/vendor hosts — including

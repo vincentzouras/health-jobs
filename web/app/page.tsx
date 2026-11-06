@@ -1,20 +1,20 @@
 import JobBoard from './JobBoard';
 import {
   ensureSchema,
+  getDiscoveryState,
   getSourceCandidates,
-  getWatchState,
   hasDb,
   JOB_COLUMNS,
   pool,
   rowToJob,
-  WATCH_DEFAULTS,
+  DISCOVERY_DEFAULTS,
 } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
 const EMPTY_META = {
   lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
-  watch: WATCH_DEFAULTS,
+  discovery: DISCOVERY_DEFAULTS,
 };
 
 async function load() {
@@ -50,7 +50,7 @@ async function load() {
         scannerVersion: metaMap.scanner_version ?? null,
         mapOrigin: (origin.rows[0]?.origin_label as string) ?? null,
         retired: jobs.filter((j) => j.status === 'retired').length,
-        watch: await getWatchState(),
+        discovery: await getDiscoveryState(),
         db: true,
       },
     };

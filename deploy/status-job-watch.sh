@@ -68,11 +68,12 @@ if [ -x "$HERMES/hermes" ]; then
   else
     bad "cron auto-deploy" "not scheduled (drift possible)"
   fi
-  # The gate is what makes the dashboard's on/off and check-every controls mean anything.
-  if printf '%s' "$LIST" | grep -q "gate-job-watch.sh"; then
-    ok "cron scan gate" "every 5 min"
+  # The hunt is what turns "the app improves over time" into something real; without this cron
+  # the dashboard switch does nothing.
+  if printf '%s' "$LIST" | grep -q "hunt-employers.sh"; then
+    ok "cron employer hunt" "scheduled"
   else
-    bad "cron scan gate" "missing - dashboard scanning controls do nothing"
+    bad "cron employer hunt" "missing - the dashboard switch does nothing"
   fi
 else
   bad "cron" "hermes not found at $HERMES"
@@ -90,6 +91,19 @@ PYEOF
   if [ "$AGE_H" -le 36 ]; then ok "state freshness" "${AGE_H}h old ($COUNTS)"; else bad "state freshness" "${AGE_H}h old - no recent run?"; fi
 else
   bad "state freshness" "missing $STATE"
+fi
+
+# 4b. sources added over time (they are scanned by the same daily run)
+EXTRA_DIR="$HOME/.hermes/job-watches/sources.d"
+if [ -d "$EXTRA_DIR" ]; then
+  EXTRA_N=$(ls -1 "$EXTRA_DIR"/*.json 2>/dev/null | wc -l)
+  if [ "$EXTRA_N" -gt 0 ]; then
+    ok "extra sources" "$EXTRA_N added by the hunt ($(ls -1 "$EXTRA_DIR"/*.json 2>/dev/null | xargs -r -n1 basename | sed 's/\.json$//' | paste -sd, -))"
+  else
+    info "extra sources" "none yet"
+  fi
+else
+  info "extra sources" "no sources.d directory yet"
 fi
 
 # 5. board reachable and reporting the same scanner build

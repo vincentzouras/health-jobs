@@ -53,34 +53,38 @@ That is what keeps a run free, reproducible and immune to invented postings.
 
 ---
 
-## Scanning control, and the site-discovery queue
+## Two triggers, and only one of them scans
 
-The dashboard owns whether the Pi scans and how often. A `--gate` cron ticks every 5 minutes, reads
-`/api/watch`, and either exits in under a second or does a real scan:
-
-| Knob | Stored in | Effect |
+| Trigger | What it does | Cadence |
 |---|---|---|
-| Scanning on/off | `meta.watch_enabled` | Off = the run stops after one HTTP GET, before any browser page opens |
-| Check every | `meta.scan_interval_min` | 30 min … 4 h, or `0` for only-when-asked; clamped to 15 min minimum |
-| Scan now | `meta.scan_requested` | Sets a stamp the next gate tick honours, then clears |
+| `8e7a83cfdc37` — the scan | Scans **every** employer in the list, native and added | 08:00 daily, fixed |
+| `97a3b6424e58`-style hunt | Finds employers that are **not** in the list yet and installs the readable ones | every 30 min, but only when the dashboard switch is on *and* the cooldown (6 h) has passed |
 
-A full scan is ~13–15 minutes (about 60 page loads), so a five-minute gate does not mean a
-five-minute scan: the interval is the real cadence, and ~30 minutes is the practical floor.
+The dashboard owns exactly one switch: **"looking for new employers"**. It does not re-scan
+employers you already watch — that is still one fixed daily run, so the list never gets hammered.
 
-While screening new postings the watcher also reads the outbound links of each detail page it opens,
-and records any **job site it does not scrape** in a queue (`source_candidates`). The board lists
-those under *Site discovery*, newest evidence first, with **Watch** / **Dismiss**. Marking a site
-queued records the intent only — a new site needs a parser written and tested against it, so
-nothing is scraped unattended. That is the loop: the queue shows where the next parser is worth
-writing, and `--discover` fills the queue from the board already on file (25 detail pages by
-default):
+When the switch is on, `hunt-employers.sh` asks a Hermes agent to propose employers in the two
+50-minute areas, probe each candidate board with `job_watch.py --probe-source`, and install the
+ones that pass. A proposal is only believed when a real page load agrees: the probe counts
+postings and names the applicant tracking system, so a hallucinated or stale careers URL dies
+there instead of taking a slot in tomorrow's scan.
+
+Added employers are **data, not code**: `~/.hermes/job-watches/sources.d/<slug>.json` names a
+parser from a whitelist (`workday`, `ukg`, `neogov`, `phenom`, …) and is loaded at startup, so it
+is scanned by the same 08:00 run. The board lists what was added, with a **Stop** button that
+queues the removal for the Pi's next run.
 
 ```bash
-~/.hermes/scripts/job_watch.py --discover
+PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
+$PY job_watch.py --list-sources                          # native + added, with health
+$PY job_watch.py --probe-source "https://…" --name X      # JSON: platform, postings, sample
+$PY job_watch.py --probe-source "https://…" --name X --add  # install it if it passed
+$PY job_watch.py --add-source '<the "source" object>'
+$PY job_watch.py --drop-source <slug>
 ```
 
-Because a candidate is a registrable domain (`careers.foo.org` and `foo.org` are one entry),
-analytics/CDN/social hosts are filtered out, and the queue is capped at 60 entries.
+Nothing about this is unattended guesswork: an employer joins the watch only through a parser
+that already works on its ATS, and it can be removed from the board in one click.
 
 ---
 
@@ -93,7 +97,7 @@ The repo is the source of truth; the Pi holds a checkout and a deployed copy.
 | Git checkout on the Pi | `~/.hermes/pop-health-jobs` |
 | Deployed script (what cron runs) | `~/.hermes/scripts/job_watch.py` |
 | Cron shim (stable, never edited) | `~/.hermes/scripts/deploy-job-watch.sh` |
-| Scan gate (the 5-minute tick) | `~/.hermes/scripts/gate-job-watch.sh` |
+| Employer hunt (the 30-minute tick) | `~/.hermes/scripts/hunt-employers.sh` |
 | Deploy logic (lives in the repo) | [`deploy/deploy-job-watch.sh`](deploy/deploy-job-watch.sh) |
 
 A second Hermes cron job (`dee89f6f4230`, 07:45) runs the shim, which pulls `main`, self-tests
@@ -117,7 +121,7 @@ watcher/
 
 deploy/
   deploy-job-watch.sh   pull → selftest → install atomically → verify hash
-  gate-job-watch.sh     five-minute tick: scan only if the dashboard says it is due
+  hunt-employers.sh     finds + installs new employers (only when the switch is on)
   cron-shim.sh          installed as ~/.hermes/scripts/deploy-job-watch.sh
   status-job-watch.sh   PASS/FAIL health check for the whole Pi side
 
@@ -131,7 +135,7 @@ web/
     theme.ts            MUI theme (Roboto, flat buttons)
     Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)
-    api/watch/          GET/POST the scanning knobs (on/off, interval, scan now)
+    api/discover/       GET/POST the employer-hunt switch + added sources
     api/sources/        GET the discovery queue, POST watch/dismiss on a host
     api/sources/discover/  POST the Pi's candidate hosts (token auth)
     api/jobs/           GET active + archive
