@@ -1202,9 +1202,47 @@ def check_source_health(found, errors, prev_health) -> tuple[list, dict]:
             warnings.append("%s: only %d postings (usually ~%d) — possible partial breakage"
                             % (name, n, peak))
     return warnings, health
+
+
+# One scan at a time. A full scan takes ~13-15 minutes and a gate tick lands every 5, so without
+# this the second tick would start a second scan (state still holds the previous run's last_run)
+# and two browsers on a Pi would fight over memory. Released when the process exits.
+RUN_LOCK = None
+
+
+def acquire_run_lock() -> bool:
+    """Take the scan lock, or report that another run owns it. Never raises."""
+    global RUN_LOCK
+    try:
+        import fcntl
+    except ImportError:
+        return True  # not POSIX: nothing to coordinate with, carry on
+    if RUN_LOCK is not None:
+        return False
+    try:
+        fh = open(STATE_DIR / "job-watch.lock", "a+")
+    except Exception:
+        return True  # unwritable state dir is a bigger problem than a double scan
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
+        fh.close()
+        return False
+    RUN_LOCK = fh
+    return True
+
+
+def release_run_lock() -> None:
+    global RUN_LOCK
+    if RUN_LOCK is not None:
+        try:
+            RUN_LOCK.close()
+        except Exception:
+            pass
+        RUN_LOCK = None
+
+
 def load_state():
-    # A corrupt state file would look like a first run and re-alert everything, so fall back
-    # to the copy save_state keeps.
     for path in (STATE_FILE, STATE_FILE.with_suffix(".bak")):
         if path.exists():
             try:
@@ -2089,16 +2127,42 @@ def selftest() -> int:
             sfails += 1
         print("%-6s %-24s -> %r" % ("PASS" if ok else "FAIL", name, got))
 
+    print("\n--- one scan at a time ---")
+    try:
+        import fcntl  # noqa: F401
+        posix_lock = True
+    except ImportError:
+        posix_lock = False
+    first = acquire_run_lock()
+    second = acquire_run_lock()
+    release_run_lock()
+    again = acquire_run_lock()
+    release_run_lock()
+    lk_cases = [
+        ("acquire", first is True, first),
+        # Without fcntl (the Windows dev box) the lock is a no-op by design, so only assert on POSIX.
+        ("second blocked", (second is False) if posix_lock else True,
+         second if posix_lock else "skipped (no fcntl)"),
+        ("reacquire after release", again is True, again),
+    ]
+    lkfails = 0
+    for name, ok, got in lk_cases:
+        if not ok:
+            lkfails += 1
+        print("%-6s %-24s -> %r" % ("PASS" if ok else "FAIL", name, got))
+
 
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
           "%d penn failures, %d posted failures, %d location failures, %d map failures, "
-          "%d boundary failures, %d discovery failures, %d cases total"
+          "%d boundary failures, %d discovery failures, %d lock failures, %d cases total"
           % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails, sfails,
+             lkfails,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
-             + len(dcases) + len(bcases) + len(lcases) + len(mcases) + len(scases) + 8))
+             + len(dcases) + len(bcases) + len(lcases) + len(mcases) + len(scases)
+             + len(lk_cases) + 8))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
                  and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0
-                 and sfails == 0) else 1
+                 and sfails == 0 and lkfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -2818,6 +2882,11 @@ def main() -> int:
     due, why = scan_is_due(watch, st, gate)
     if not due:
         # Silent by design: a paused or not-yet-due tick must send nothing and log nothing.
+        return 0
+    if not acquire_run_lock():
+        # Another scan is still running (the gate ticks every 5 min, a scan takes ~15).
+        if gate and "--verbose" in args:
+            print("job watch: skipping, another scan is running")
         return 0
     if gate and "--verbose" in args:
         print("job watch: scanning (%s)" % why)

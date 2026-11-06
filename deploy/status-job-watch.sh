@@ -48,7 +48,7 @@ fi
 # 2. the installed copy passes its own tests
 if out=$("$PY" "$DEST" --selftest 2>&1 | tail -1); then
   case "$out" in
-    *"0 title failures"*"0 location failures"*) ok "selftest" "$out" ;;
+    *"0 title failures"*"0 location failures"*"0 discovery failures"*) ok "selftest" "$out" ;;
     *) bad "selftest" "$out" ;;
   esac
 else
@@ -67,6 +67,12 @@ if [ -x "$HERMES/hermes" ]; then
     ok "cron auto-deploy" "scheduled"
   else
     bad "cron auto-deploy" "not scheduled (drift possible)"
+  fi
+  # The gate is what makes the dashboard's on/off and check-every controls mean anything.
+  if printf '%s' "$LIST" | grep -q "gate-job-watch.sh"; then
+    ok "cron scan gate" "every 5 min"
+  else
+    bad "cron scan gate" "missing - dashboard scanning controls do nothing"
   fi
 else
   bad "cron" "hermes not found at $HERMES"

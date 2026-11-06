@@ -93,6 +93,7 @@ The repo is the source of truth; the Pi holds a checkout and a deployed copy.
 | Git checkout on the Pi | `~/.hermes/pop-health-jobs` |
 | Deployed script (what cron runs) | `~/.hermes/scripts/job_watch.py` |
 | Cron shim (stable, never edited) | `~/.hermes/scripts/deploy-job-watch.sh` |
+| Scan gate (the 5-minute tick) | `~/.hermes/scripts/gate-job-watch.sh` |
 | Deploy logic (lives in the repo) | [`deploy/deploy-job-watch.sh`](deploy/deploy-job-watch.sh) |
 
 A second Hermes cron job (`dee89f6f4230`, 07:45) runs the shim, which pulls `main`, self-tests
@@ -116,6 +117,7 @@ watcher/
 
 deploy/
   deploy-job-watch.sh   pull → selftest → install atomically → verify hash
+  gate-job-watch.sh     five-minute tick: scan only if the dashboard says it is due
   cron-shim.sh          installed as ~/.hermes/scripts/deploy-job-watch.sh
   status-job-watch.sh   PASS/FAIL health check for the whole Pi side
 

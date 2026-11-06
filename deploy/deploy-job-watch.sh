@@ -36,11 +36,18 @@ git -C "$REPO" merge --ff-only --quiet origin/main || {
 }
 NEW_HEAD=$(git -C "$REPO" rev-parse --short HEAD)
 
-# Keep the status helper in step with the repo too (it is small and has no state).
-if [ -f "$REPO/deploy/status-job-watch.sh" ]; then
-  mkdir -p "$HOME/.hermes/bin"
-  cp "$REPO/deploy/status-job-watch.sh" "$HOME/.hermes/bin/status-job-watch.sh"
-  chmod 775 "$HOME/.hermes/bin/status-job-watch.sh"
+# Keep the status helper and the gate shim in step with the repo too (both are small, stateless).
+for helper in status-job-watch.sh gate-job-watch.sh; do
+  if [ -f "$REPO/deploy/$helper" ]; then
+    mkdir -p "$HOME/.hermes/bin"
+    cp "$REPO/deploy/$helper" "$HOME/.hermes/bin/$helper"
+    chmod 775 "$HOME/.hermes/bin/$helper"
+  fi
+done
+# The gate shim has to live where Hermes cron looks for --script.
+if [ -f "$REPO/deploy/gate-job-watch.sh" ]; then
+  cp "$REPO/deploy/gate-job-watch.sh" "$DEST_DIR/gate-job-watch.sh"
+  chmod 775 "$DEST_DIR/gate-job-watch.sh"
 fi
 
 NEW_MD5=$(md5sum "$SRC" | cut -d' ' -f1)
