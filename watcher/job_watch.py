@@ -1282,10 +1282,32 @@ BING_JS = r"""
 })()
 """
 
+# Engines that answer this network in a real browser, best first. Bing is deliberately absent:
+# its results for a quoted employer name are unrelated pages, from a browser or from plain HTTP.
+SEARCH_ENGINES = (
+    ("yahoo", "https://search.yahoo.com/search?p=%s"),
+    ("ecosia", "https://www.ecosia.org/search?q=%s"),
+    ("brave", "https://search.brave.com/search?q=%s"),
+)
+ENGINE_HOSTS = ("yahoo.com", "search.yahoo", "brave.com", "ecosia.org", "duckduckgo.com",
+                "bing.com", "microsoft.com", "google.com", "w3.org", "mojeek.com")
 
-def _bing_via_browser(query: str, wait: float = 8.0) -> list:
-    """Search in the real browser: the same URL over plain HTTP gets degraded rankings."""
-    url = "https://www.bing.com/search?q=" + urllib.parse.quote(query)
+ANCHORS_JS = r"""
+(() => {
+  const out = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    const h = a.href || '';
+    if (!/^https?:/.test(h)) continue;
+    out.push(h.slice(0, 300));
+    if (out.length >= 40) break;
+  }
+  return out;
+})()
+"""
+
+
+def _search_in_browser(url: str, wait: float = 8.0) -> list:
+    """Every external anchor on a search-results page. [] on any problem."""
     try:
         tab = camo("POST", "/tabs", {"userId": USER, "sessionKey": "jobsrch", "url": url})
         tid = tab.get("tabId") or tab.get("id") or (tab.get("tab") or {}).get("tabId")
@@ -1294,7 +1316,7 @@ def _bing_via_browser(query: str, wait: float = 8.0) -> list:
         try:
             time.sleep(wait)
             ev = camo("POST", "/tabs/%s/evaluate" % tid,
-                      {"userId": USER, "expression": BING_JS})
+                      {"userId": USER, "expression": ANCHORS_JS})
             return [u for u in (ev.get("result") or []) if isinstance(u, str)]
         finally:
             try:
@@ -1305,6 +1327,17 @@ def _bing_via_browser(query: str, wait: float = 8.0) -> list:
         return []
 
 
+def _unwrap_engine(url: str) -> str:
+    """Yahoo wraps some hits as r.search.yahoo.com/.../RU=<encoded>/RK=…"""
+    m = re.search(r"/RU=([^/]+)/", url)
+    if m:
+        try:
+            return urllib.parse.unquote(m.group(1))
+        except Exception:
+            return url
+    return url
+
+
 def search_boards(employer: str, limit: int = 6) -> list:
     """Candidate job-board URLs for an employer name, best-looking first. [] on failure.
 
@@ -1312,30 +1345,26 @@ def search_boards(employer: str, limit: int = 6) -> list:
     can be added. Results are filtered to ones that mention the employer or live on a known ATS,
     because a bare search for "York County" happily returns a school in another state.
     """
-    query = '"%s" careers jobs' % employer
-    urls = _decode_bing(_bing_via_browser(query))
-    if not urls:
-        req = urllib.request.Request(
-            "https://www.bing.com/search?q=" + urllib.parse.quote(query),
-            headers={"User-Agent": SEARCH_UA, "Accept-Language": "en-US,en;q=0.9"})
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                urls = _bing_results(r.read().decode("utf-8", "replace"))
-        except Exception:
-            return []
+    query = "%s careers jobs" % employer
     tokens = [t for t in re.split(r"[^a-z0-9]+", employer.lower()) if len(t) > 3]
-    kept = []
-    for url in urls:
-        host = site_host(url)
-        path = (urllib.parse.urlsplit(url).path or "/").lower()
-        on_ats = any(a in host for a in ATS_HOSTS)
-        mentions = any(t in host or t in path for t in tokens)
-        if on_ats or mentions:
-            kept.append(url)
-    # A board path beats a home page; keep the original order inside each group.
-    looks = [u for u in kept if BOARD_PATH.search(u)]
-    other = [u for u in kept if u not in looks]
-    return (looks + other)[:limit]
+    for name, template in SEARCH_ENGINES:
+        hrefs = _search_in_browser(template % urllib.parse.quote(query))
+        kept = []
+        for href in hrefs:
+            url = _unwrap_engine(href.replace("&amp;", "&"))
+            host = site_host(url)
+            if not host or host in LINK_NOISE or any(e in host for e in ENGINE_HOSTS):
+                continue
+            path = (urllib.parse.urlsplit(url).path or "/").lower()
+            on_ats = any(a in host for a in ATS_HOSTS)
+            mentions = any(t in host or t in path for t in tokens)
+            if (on_ats or mentions) and url not in kept:
+                kept.append(url)
+        if kept:
+            looks = [u for u in kept if BOARD_PATH.search(u)]
+            other = [u for u in kept if u not in looks]
+            return (looks + other)[:limit]
+    return []
 
 
 def find_board(employer: str, probe: bool = True, wait: float = 10.0, max_probe: int = 3) -> dict:
