@@ -880,6 +880,47 @@ def parse_tower(href, text, base):
     return jid, title, "", link
 
 
+# BambooHR boards are a plain server-rendered list: <a href="/careers/123">Title</a>.
+BAMBOO_JS = r"""
+(() => {
+  const out = [], seen = new Set();
+  for (const a of document.querySelectorAll('a[href*="/careers/"]')) {
+    const h = a.getAttribute('href') || '';
+    if (!/\/careers\/\d+/.test(h)) continue;
+    const base = h.split('?')[0];
+    if (seen.has(base)) continue;
+    seen.add(base);
+    const row = a.closest('li,tr,div[class*="job"],div[class*="opening"]') || a.parentElement;
+    const text = ((row && row.innerText) || a.innerText || '').replace(/\s+/g, ' ').trim();
+    out.push({ h: base, t: text.slice(0, 200), d: '' });
+    if (out.length >= 60) break;
+  }
+  return out;
+})()
+"""
+
+
+def parse_bamboohr(href, text, base):
+    m = re.search(r"/careers/(\d+)", href)
+    if not m:
+        return None
+    jid = m.group(1)
+    raw = (text or "").strip()
+    loc = ""
+    # Cards read "<title> - <city>, <ST>" or put the city on its own line; either way the city is
+    # the last segment before the ", ST" tail.
+    tail = re.search(r",\s*([A-Z]{2})\s*$", raw)
+    if tail:
+        head = raw[:tail.start()]
+        city = re.split(r"\s[-\u2013|]\s|,|\n", head)[-1].strip()
+        if city:
+            loc = "%s, %s" % (city, tail.group(1))
+            raw = head[:len(head) - len(city)]
+    title = re.sub(r"\s+", " ", raw).strip(" |-—,\n")
+    link = base + href if href.startswith("/") else href
+    return jid, title, loc, link
+
+
 def parse_upmc(href, text, base):
     m = re.search(r"/job/(\d+)/([^/]+)?", href)
     if not m:
@@ -1103,12 +1144,14 @@ PARSERS = {
     "penn": parse_penn,
     "mainline": parse_mainline,
     "upmc": parse_upmc,
+    "bamboohr": parse_bamboohr,
 }
 
 EXTRACTS = {
     "auto": None,                        # plain anchors, the default EXTRACT_JS
     "ukg": PHMC_EXTRACT_JS,
     "phenom": AH_EXTRACT_JS,
+    "bamboohr": BAMBOO_JS,
     "workday": None,
 }
 
@@ -1118,6 +1161,7 @@ PLATFORMS = {
     "ukg": ("ukg", "ukg"),
     "neogov": ("neogov", "auto"),
     "phenom": ("phenom", "phenom"),
+    "bamboohr": ("bamboohr", "bamboohr"),
 }
 
 
@@ -1306,6 +1350,26 @@ ANCHORS_JS = r"""
 """
 
 
+def _ats_targets_on_page(url: str, wait: float = 6.0) -> list:
+    """ATS URLs a careers page points at, whether in an iframe or a plain "apply here" link.
+
+    Family First Health links out to Paycom, ChesPenn to BambooHR; neither board lives on the
+    employer's own domain, and an anchor scrape of the careers page sees neither.
+    """
+    found = []
+    for candidate in probe_iframes(url, wait=wait) + _search_in_browser(url, wait=wait):
+        host = site_host(candidate)
+        if not host:
+            continue
+        on_ats = any(a in host for a in ATS_HOSTS)
+        looks_like_board = bool(BOARD_PATH.search(candidate))
+        if (on_ats or looks_like_board) and candidate not in found:
+            found.append(candidate)
+        if len(found) >= 3:
+            break
+    return found
+
+
 def _search_in_browser(url: str, wait: float = 8.0) -> list:
     """Every external anchor on a search-results page. [] on any problem."""
     try:
@@ -1456,14 +1520,15 @@ def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "
     if best is None:
         return res
     rows, used_extract = best
-    # Nothing on the page itself: the board may be embedded from an ATS. Follow it once.
+    # Nothing on the page itself: the board may be embedded or linked from a careers page. Follow
+    # a link to a known ATS once (small employers almost always outsource to one).
     if len(rows) < 5 and depth == 0:
-        for frame in probe_iframes(url):
-            inner = probe_source(frame, wait=wait, name=name, location=location, depth=1)
+        for candidate in _ats_targets_on_page(url):
+            inner = probe_source(candidate, wait=wait, name=name, location=location, depth=1)
             if inner["ok"]:
-                inner["url"] = frame
                 inner["via"] = url
-                inner["source"]["name"] = name or inner["source"]["name"]
+                if name:
+                    inner["source"]["name"] = name
                 return inner
     res["postings"] = len(rows)
     res["sample"] = [str(r.get("t") or "")[:80] for r in rows[:5]]
@@ -2746,6 +2811,20 @@ def selftest() -> int:
         hcases2.append(("platform %s" % want, got == want, got))
     hcases2.append(("name from url", _name_from_url("https://careers.acme-health.org/x") == "Acme Health",
                     _name_from_url("https://careers.acme-health.org/x")))
+    # BambooHR: the board small nonprofits outsource to (ChesPenn links out to it).
+    hcases2.append(("platform bamboohr", platform_of("https://chespenn.bamboohr.com/careers") == "bamboohr",
+                    platform_of("https://chespenn.bamboohr.com/careers")))
+    bh = parse_bamboohr("https://chespenn.bamboohr.com/careers/1234",
+                        "Community Health Worker - Eddystone, PA", "https://chespenn.bamboohr.com")
+    hcases2.append(("bamboohr parse",
+                    bh and bh[0] == "1234" and bh[1] == "Community Health Worker"
+                    and bh[2] == "Eddystone, PA", bh))
+    hcases2.append(("bamboohr rejects non-job",
+                    parse_bamboohr("https://x.bamboohr.com/careers", "Careers", "") is None, None))
+    bh2 = parse_bamboohr("https://x.bamboohr.com/careers/99",
+                         "Care Coordinator\nGlen Mills, PA", "https://x.bamboohr.com")
+    hcases2.append(("bamboohr city on its own line",
+                    bh2 and bh2[1] == "Care Coordinator" and bh2[2] == "Glen Mills, PA", bh2))
     # The probe's own refusals: a spec that cannot be scanned must not reach sources.d.
     hcases2.append(("reject unknown parser",
                     add_source({"name": "X", "parse": "curl", "urls": ["https://x.test"]})[0] is False,
