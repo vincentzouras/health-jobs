@@ -1441,15 +1441,20 @@ def search_boards(employer: str, limit: int = 6) -> list:
     return []
 
 
-def find_board(employer: str, probe: bool = True, wait: float = 10.0, max_probe: int = 3) -> dict:
-    """Employer name -> the first candidate board that passes the probe. Never raises."""
+def find_board(employer: str, probe: bool = True, wait: float = 10.0, max_probe: int = 3,
+               location: str = "") -> dict:
+    """Employer name -> the first candidate board that passes the probe. Never raises.
+
+    `location` becomes the source's default city. Single-county employers often publish no city
+    on the list page at all; the daily run then reads the real one off each posting and corrects it.
+    """
     res = {"employer": employer, "found": False, "checked": [], "source": None}
     for url in search_boards(employer)[:max_probe]:
         row = {"url": url, "platform": platform_of(url), "postings": None, "ok": False}
         res["checked"].append(row)
         if not probe:
             continue
-        got = probe_source(url, wait=wait, name=employer)
+        got = probe_source(url, wait=wait, name=employer, location=location)
         row["platform"] = got["platform"]
         row["postings"] = got["postings"]
         row["ok"] = got["ok"]
@@ -3617,7 +3622,8 @@ def main() -> int:
             print("usage: --find-board 'Employer name' [--no-probe] [--wait 12] [--add]")
             return 2
         res = find_board(employer, probe="--no-probe" not in args,
-                         wait=float(_arg_value(args, "--wait") or 10.0))
+                         wait=float(_arg_value(args, "--wait") or 10.0),
+                         location=_arg_value(args, "--location"))
         print(json.dumps(res, indent=2))
         if "--add" in args:
             if not res.get("source"):
