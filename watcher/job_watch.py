@@ -24,6 +24,7 @@ Exit codes: 0 ok, 1 total source failure (so Hermes surfaces it), 0 otherwise.
 from __future__ import annotations
 
 import json
+import base64
 import hashlib
 import math
 import os
@@ -1222,6 +1223,137 @@ def platform_of(url: str, hrefs=()) -> str:
         if needle in blob:
             return platform
     return "unknown"
+
+
+SEARCH_UA = ("Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) "
+             "Chrome/131.0 Safari/537.36")
+# Paths that look like a job board rather than a marketing page.
+BOARD_PATH = re.compile(r"careers?|jobs?|job-search|search-results|employment|opportunit", re.I)
+# Applicant tracking systems host many employers, so an ATS URL is kept even when the host
+# says nothing about the employer - the agency slug is in the path instead.
+ATS_HOSTS = ("governmentjobs.com", "neogov.com", "myworkdayjobs.com", "myworkdaysite.com",
+             "ultipro.com", "phenompeople.com", "icims.com", "taleo.net", "greenhouse.io",
+             "lever.co", "smartrecruiters.com", "paycomonline.com", "dayforcehcm.com",
+             "bamboohr.com", "workable.com", "jobvite.com", "successfactors.com")
+
+
+def _decode_bing(hrefs) -> list:
+    """Real result URLs from Bing's href list, decoding its /ck/a redirects."""
+    out, seen = [], set()
+    for href in hrefs:
+        if not isinstance(href, str):
+            continue
+        url = href.replace("&amp;", "&")
+        if "bing.com/ck/a" in url:
+            # Bing wraps results: …&u=a1<base64url of the real url>
+            mm = re.search(r"[?&]u=a1([A-Za-z0-9_%\-]+)", url)
+            if not mm:
+                continue
+            raw = urllib.parse.unquote(mm.group(1))
+            raw += "=" * (-len(raw) % 4)
+            try:
+                url = base64.urlsafe_b64decode(raw).decode("utf-8", "replace")
+            except Exception:
+                continue
+        host = site_host(url)
+        if not host or host in LINK_NOISE or "bing.com" in host or "microsoft.com" in host:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _bing_results(html: str) -> list:
+    """Same, from a raw Bing HTML page (the no-browser fallback)."""
+    return _decode_bing(m.group(1) for m in re.finditer(r'href="(https?://[^"]+)"', html))
+
+
+BING_JS = r"""
+(() => {
+  const out = [];
+  for (const li of document.querySelectorAll('li.b_algo')) {
+    const a = li.querySelector('h2 a');
+    if (a && a.href) out.push(a.href);
+    if (out.length >= 12) break;
+  }
+  return out;
+})()
+"""
+
+
+def _bing_via_browser(query: str, wait: float = 8.0) -> list:
+    """Search in the real browser: the same URL over plain HTTP gets degraded rankings."""
+    url = "https://www.bing.com/search?q=" + urllib.parse.quote(query)
+    try:
+        tab = camo("POST", "/tabs", {"userId": USER, "sessionKey": "jobsrch", "url": url})
+        tid = tab.get("tabId") or tab.get("id") or (tab.get("tab") or {}).get("tabId")
+        if not tid:
+            return []
+        try:
+            time.sleep(wait)
+            ev = camo("POST", "/tabs/%s/evaluate" % tid,
+                      {"userId": USER, "expression": BING_JS})
+            return [u for u in (ev.get("result") or []) if isinstance(u, str)]
+        finally:
+            try:
+                camo("DELETE", "/tabs/%s?userId=%s" % (tid, USER), timeout=20)
+            except Exception:
+                pass
+    except Exception:
+        return []
+
+
+def search_boards(employer: str, limit: int = 6) -> list:
+    """Candidate job-board URLs for an employer name, best-looking first. [] on failure.
+
+    This only turns a NAME into candidate URLs - the probe still has to prove each one before it
+    can be added. Results are filtered to ones that mention the employer or live on a known ATS,
+    because a bare search for "York County" happily returns a school in another state.
+    """
+    query = '"%s" careers jobs' % employer
+    urls = _decode_bing(_bing_via_browser(query))
+    if not urls:
+        req = urllib.request.Request(
+            "https://www.bing.com/search?q=" + urllib.parse.quote(query),
+            headers={"User-Agent": SEARCH_UA, "Accept-Language": "en-US,en;q=0.9"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                urls = _bing_results(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return []
+    tokens = [t for t in re.split(r"[^a-z0-9]+", employer.lower()) if len(t) > 3]
+    kept = []
+    for url in urls:
+        host = site_host(url)
+        path = (urllib.parse.urlsplit(url).path or "/").lower()
+        on_ats = any(a in host for a in ATS_HOSTS)
+        mentions = any(t in host or t in path for t in tokens)
+        if on_ats or mentions:
+            kept.append(url)
+    # A board path beats a home page; keep the original order inside each group.
+    looks = [u for u in kept if BOARD_PATH.search(u)]
+    other = [u for u in kept if u not in looks]
+    return (looks + other)[:limit]
+
+
+def find_board(employer: str, probe: bool = True, wait: float = 10.0) -> dict:
+    """Employer name -> the first candidate board that passes the probe. Never raises."""
+    res = {"employer": employer, "found": False, "checked": [], "source": None}
+    for url in search_boards(employer):
+        row = {"url": url, "platform": platform_of(url), "postings": None, "ok": False}
+        res["checked"].append(row)
+        if not probe:
+            continue
+        got = probe_source(url, wait=wait, name=employer)
+        row["platform"] = got["platform"]
+        row["postings"] = got["postings"]
+        row["ok"] = got["ok"]
+        if got["ok"]:
+            res.update(found=True, source=got["source"], checked=res["checked"])
+            break
+    return res
 
 
 def _name_from_url(url: str) -> str:
@@ -3312,7 +3444,23 @@ def main() -> int:
     if "--selftest" in args:
         return selftest()
 
-    # Employer discovery: probe a board, add it, drop it, list what is watched.
+    # Employer discovery: name -> board -> install. The probe is what makes it safe.
+    if "--find-board" in args:
+        employer = _arg_value(args, "--find-board")
+        if not employer:
+            print("usage: --find-board 'Employer name' [--no-probe] [--wait 12] [--add]")
+            return 2
+        res = find_board(employer, probe="--no-probe" not in args,
+                         wait=float(_arg_value(args, "--wait") or 10.0))
+        print(json.dumps(res, indent=2))
+        if "--add" in args:
+            if not res.get("source"):
+                print("NOT added: no board passed the probe", file=sys.stderr)
+                return 1
+            ok, msg = add_source(res["source"])
+            print(("added: %s" % msg) if ok else ("NOT added: %s" % msg), file=sys.stderr)
+            return 0 if ok else 1
+        return 0 if res.get("found") or "--allow-fail" in args else 1
     if "--probe-source" in args:
         url = _arg_value(args, "--probe-source")
         if not url:
