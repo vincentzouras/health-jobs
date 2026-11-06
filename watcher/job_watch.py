@@ -1338,10 +1338,10 @@ def search_boards(employer: str, limit: int = 6) -> list:
     return (looks + other)[:limit]
 
 
-def find_board(employer: str, probe: bool = True, wait: float = 10.0) -> dict:
+def find_board(employer: str, probe: bool = True, wait: float = 10.0, max_probe: int = 3) -> dict:
     """Employer name -> the first candidate board that passes the probe. Never raises."""
     res = {"employer": employer, "found": False, "checked": [], "source": None}
-    for url in search_boards(employer):
+    for url in search_boards(employer)[:max_probe]:
         row = {"url": url, "platform": platform_of(url), "postings": None, "ok": False}
         res["checked"].append(row)
         if not probe:
@@ -1372,8 +1372,11 @@ def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "
            "sample": [], "error": None, "source": None}
     platform = platform_of(url)
     extract = PLATFORMS.get(platform, ("", "auto"))[1] if platform in PLATFORMS else "auto"
+    attempts = [(EXTRACTS[extract], extract)]
+    if EXTRACTS[extract] is not None:
+        attempts.append((None, "auto"))
     best = None
-    for attempt in ((EXTRACTS[extract], extract), (None, "auto")):
+    for attempt in attempts:
         try:
             raw = fetch_jobs(url, wait=wait, extract_js=attempt[0])
         except Exception as e:
