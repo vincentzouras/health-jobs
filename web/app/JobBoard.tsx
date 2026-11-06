@@ -444,7 +444,7 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
       return new Date(b.firstSeen).getTime() - new Date(a.firstSeen).getTime();
     });
     return rows;
-  }, [data.active, employer, query, sort]);
+  }, [data.active, employer, area, query, sort]);
 
   const counts = {
     active: data.active.length,
