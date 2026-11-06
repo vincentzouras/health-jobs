@@ -943,6 +943,7 @@ SOURCES = [
     {
         "name": "Penn Medicine",
         "base": "https://careers.pennmedicine.org",
+        "also": ["uphshrandyou.com"],
         "parse": parse_penn,
         # Cloudflare-fronted and slow under load; 5s intermittently yields an empty shell.
         "wait": 10.0,
@@ -969,6 +970,7 @@ SOURCES = [
     {
         "name": "WellSpan (York)",
         "base": "https://www.joinwellspan.org",
+        "also": ["wellspan.org"],
         "parse": parse_wellspan,
         "default_location": "York, PA",
         # Their ?keyword= is ignored and the board returns the full list alphabetically,
@@ -981,6 +983,7 @@ SOURCES = [
     {
         "name": "Chester County",
         "base": "https://www.governmentjobs.com/careers/chesco",
+        "also": ["chesco.org"],
         "parse": parse_govjobs,
         "default_location": "West Chester, PA",
         # NEOGOV ignores ?keyword= (it bounces straight back to the bare board), so the only
@@ -993,6 +996,7 @@ SOURCES = [
     {
         "name": "Montgomery County",
         "base": "https://www.governmentjobs.com/careers/montcopa",
+        "also": ["montcopa.org"],
         "parse": parse_govjobs,
         "default_location": "Norristown, PA",
         "paginate": {"pattern": "https://www.governmentjobs.com/careers/montcopa?page={page}",
@@ -1002,6 +1006,7 @@ SOURCES = [
     {
         "name": "Delaware County",
         "base": "https://www.governmentjobs.com/careers/delcopa",
+        "also": ["delcopa.gov"],
         "parse": parse_govjobs,
         "default_location": "Media, PA",
         "paginate": {"pattern": "https://www.governmentjobs.com/careers/delcopa?page={page}",
@@ -1017,6 +1022,7 @@ SOURCES = [
     {
         "name": "Jefferson Health",
         "base": "https://jeffersonhealth.wd5.myworkdayjobs.com",
+        "also": ["jeffersonhealth.org", "wearejefferson.org"],
         "parse": parse_jefferson,
         # Workday encodes city+state in the URL path, so no default is needed.
         "wait": 14.0,
@@ -1113,6 +1119,12 @@ LINK_NOISE = {
     "addthis.com", "sharethis.com", "bit.ly", "w3.org", "schema.org", "typekit.net",
     "fonts.net", "fontawesome.com", "bootstrapcdn.com", "jsdelivr.net", "unpkg.com",
     "wikipedia.org", "mapquest.com", "openstreetmap.org", "icims.com",
+    # The "about our ads" footer NEOGOV boards all carry.
+    "mozillazine.org", "networkadvertising.org", "aboutads.info", "allaboutdnt.com",
+    # NEOGOV's own properties: the county boards we already scrape *are* governmentjobs.com.
+    "neogov.com", "neoed.com", "powerdms.com", "schooljobs.com",
+    # Webmail and intranet links inside application instructions.
+    "outlook.com", "office.com", "sharepoint.com",
 }
 # iCIMS is in the noise list deliberately: nearly every board links to it for "apply", and its
 # pages are JS shells with no server-rendered listing, so it would sit in the queue forever.
@@ -1122,13 +1134,18 @@ MAX_CANDIDATES = 60
 
 
 def site_host(url: str) -> str:
-    """The site identity of a URL: registrable domain, no www, no careers subdomain.
+    """The site identity of a URL or bare hostname: registrable domain, no www or careers prefix.
 
     Grouping by registrable domain keeps `careers.foo.org` and `foo.org` as one entry, which is
-    what "add this site" means to a person.
+    what "add this site" means to a person. A bare hostname is accepted too, because the source
+    table lists an employer's extra domains that way.
     """
+    raw = (url or "").strip()
     try:
-        host = (urllib.parse.urlsplit(url).hostname or "").lower().strip(".")
+        parts = urllib.parse.urlsplit(raw)
+        if not parts.scheme and not raw.startswith("/"):
+            parts = urllib.parse.urlsplit("//" + raw)
+        host = (parts.hostname or "").lower().strip(".")
     except ValueError:
         return ""
     if not host or "." not in host:
@@ -1164,6 +1181,11 @@ def org_key(host: str) -> str:
 
 
 KNOWN_SITE_HOSTS = {site_host(s["base"]) for s in SOURCES if s.get("base")}
+# A source may list its employer's own domains too: chesco.org links are not a new job site when
+# we already scrape that county's postings on governmentjobs.com.
+for _s in SOURCES:
+    for _h in _s.get("also") or ():
+        KNOWN_SITE_HOSTS.add(site_host(_h))
 KNOWN_ORG_KEYS = {org_key(h) for h in KNOWN_SITE_HOSTS}
 
 
@@ -2171,6 +2193,7 @@ def selftest() -> int:
         ("https://WWW.Example.COM/a", "example.com"),
         ("mailto:jobs@foo.org", ""),
         ("/relative/path", ""),
+        ("chesco.org", "chesco.org"),
     ]:
         got = site_host(url)
         scases.append(("site_host %s" % url[:40], got == want, got))
@@ -2183,6 +2206,11 @@ def selftest() -> int:
                    org_key("joinwellspan.org") == org_key("wellspan.org") == "wellspan",
                    (org_key("joinwellspan.org"), org_key("wellspan.org"))))
     scases.append(("org key keeps tld apart", org_key("example.com") == "example", org_key("example.com")))
+    # An employer's own domain is in the known set, so its links never reach the queue.
+    scases.append(("employer domains known",
+                   {"chesco.org", "montcopa.org", "delcopa.gov", "wellspan.org",
+                    "wearejefferson.org", "uphshrandyou.com"} <= KNOWN_SITE_HOSTS,
+                   sorted(KNOWN_SITE_HOSTS)))
 
     stamp = "2026-01-01T00:00:00Z"
     st_d = {}
