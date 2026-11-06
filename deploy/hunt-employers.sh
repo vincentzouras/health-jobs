@@ -73,17 +73,15 @@ That prints every employer already scanned. Never propose any of them again, and
 
 Step 2. Think of employers in south-central and south-eastern Pennsylvania and northern Delaware that plausibly post roles like: population health coordinator, community health worker, care coordinator, care manager, patient navigator, health educator, community outreach, social services coordinator, referral coordinator, care connector. They must be within about 50 minutes' drive of York PA or of Marshallton PA (West Chester). Good hunting grounds: health systems, FQHCs and community health centres, county agencies (children and youth, area agency on aging, behavioural health), home health and hospice, Medicaid managed care plans, and community nonprofits in those counties. Do not propose staffing or travel-nurse agencies, or national aggregators (Indeed, LinkedIn, Glassdoor, ZipRecruiter).
 
-Step 3. Probe at most $MAX_PROBE candidate career-site URLs. For each one run exactly this and read the JSON it prints:
-  $PY $WATCH --probe-source "<URL>" --name "<Employer name>" --allow-fail
-Keep a candidate only when the JSON says "ok": true. That flag means a real page load found at least 5 postings on an applicant tracking system this tool knows how to read. If "ok" is false, drop that employer for this run.
+Step 3. Do NOT invent or guess careers URLs. For each employer, run exactly this and it will find the board, probe it and install it if it passes:
+  $PY $WATCH --find-board "<Employer name>" --add --allow-fail
+Read the JSON it prints. "found": true means a real board was found, at least 5 postings were seen, and the source was installed (the command also prints "added: <path>"). "found": false means no board passed - drop that employer for this run.
 
-Step 4. Install at most $MAX_ADD of the ones that passed. Use the "source" object straight from the JSON:
-  $PY $WATCH --add-source '<json>'
-It prints "added: <path>" on success, or "NOT added: <reason>".
+Step 4. Try at most $MAX_PROBE employers, and stop early once $MAX_ADD have been added. If none pass, that is a normal result.
 
 Rules
-- Never invent a URL you did not probe, and never say a source was added unless the command printed "added:".
-- Adding nothing is a normal result. Do not invent candidates to have something to report.
+- Never claim a source was added unless the command printed "added:".
+- Never invent candidates to have something to report.
 - Do not edit any file, do not modify job_watch.py, do not touch the sources already watched.
 
 Reply with at most 6 short lines, nothing else:
