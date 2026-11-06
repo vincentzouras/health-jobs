@@ -27,7 +27,8 @@ HERMES="${HERMES_BIN:-$HOME/.local/bin/hermes}"
 SOURCES_D="$HOME/.hermes/job-watches/sources.d"
 COOLDOWN_MIN="${JOB_HUNT_COOLDOWN_MIN:-360}"
 MAX_ADD="${JOB_HUNT_MAX_ADD:-3}"
-MAX_PROBE="${JOB_HUNT_MAX_PROBE:-5}"
+MAX_PROBE="${JOB_HUNT_MAX_PROBE:-3}"
+HUNT_TIMEOUT="${JOB_HUNT_TIMEOUT:-1200}"
 
 [ -x "$PY" ] || { echo "employer hunt: python missing at $PY"; exit 1; }
 [ -f "$WATCH" ] || { echo "employer hunt: $WATCH is missing - run deploy-job-watch.sh"; exit 1; }
@@ -91,7 +92,8 @@ optionally up to 2 lines: MISS: <employer> - <short reason>
 EOF
 )
 
-OUT=$(timeout 900 "$HERMES" -z "$PROMPT" --yolo 2>/dev/null)
+OUT=$(timeout "$HUNT_TIMEOUT" "$HERMES" -z "$PROMPT" --yolo 2>/dev/null)
+RC=$?
 AFTER=$(ls -1 "$SOURCES_D"/*.json 2>/dev/null | wc -l)
 ADDED=$((AFTER - BEFORE))
 
@@ -114,8 +116,12 @@ PYEOF
   fi
 fi
 
-# Nothing added and nothing to say: stay silent.
+# Nothing added and nothing to say: stay silent, unless the agent itself failed.
 if [ -z "${OUT// /}" ]; then
+  if [ "$RC" -ne 0 ]; then
+    printf 'employer hunt: agent exited %s with nothing to report%s\n' "$RC" \
+      "$([ "$RC" -eq 124 ] && printf ' (timed out after %ss)' "$HUNT_TIMEOUT")"
+  fi
   exit 0
 fi
 printf '%s\n' "$OUT"
