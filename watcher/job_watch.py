@@ -574,9 +574,13 @@ PHMC_EXTRACT_JS = r"""
     const a = card.querySelector('[data-automation="job-title"]');
     const href = a ? (a.getAttribute('href') || '') : '';
     if (!href) continue;
+    // The address element also holds a facility name ("Corp", "PHMC Care Clinic"), so read the
+    // one field that is only "City, ST ZIP, USA" rather than its combined text.
+    const addr = card.querySelector('[data-automation="physical-location"]');
+    const city = addr ? addr.querySelector('[data-automation="city-state-zip-country-label"]') : null;
     out.push({
       h: href,
-      t: (clean(a) + ' ||| ' + clean(card.querySelector('[data-automation="physical-location"]'))).slice(0, 300),
+      t: (clean(a) + ' ||| ' + clean(city || addr)).slice(0, 300),
       d: clean(card.querySelector('[data-automation="opportunity-posted-date"]'))
     });
     if (out.length >= 60) break;
