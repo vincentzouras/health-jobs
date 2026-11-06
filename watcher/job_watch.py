@@ -534,8 +534,7 @@ LINKS_JS = r"""
 
 # AmeriHealth (Phenom) wraps each result in a container whose text holds the title,
 # the city and the requisition id; the anchor alone carries only the title.
-AH_EXTRACT_JS = r"""
-(() => {""" + DATE_JS + r"""
+AH_EXTRACT_JS = r"""(() => {""" + DATE_JS + r"""
   const out = [], seen = new Set();
   for (const a of document.querySelectorAll('a[href*="/us/en/job/"]')) {
     const h = a.getAttribute('href') || '';
@@ -558,6 +557,29 @@ AH_EXTRACT_JS = r"""
     seen.add(k);
     out.push({ h: h, t: t.slice(0, 300), d: dateHint(t) });
     if (out.length >= 40) break;
+  }
+  return out;
+})()
+"""
+
+# PHMC runs on UKG (UltiPro), which renders every posting as a web component: the title is a
+# <ukg-link>, not an <a>, so an anchor scrape saw a full board as zero postings. Query the cards
+# by their data-automation hooks instead - that also hands us the city, which the anchors never
+# carried (the source used to guess "Philadelphia, PA" for all of them).
+PHMC_EXTRACT_JS = r"""
+(() => {
+  const clean = (el) => el ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  const out = [];
+  for (const card of document.querySelectorAll('[data-automation="opportunity"]')) {
+    const a = card.querySelector('[data-automation="job-title"]');
+    const href = a ? (a.getAttribute('href') || '') : '';
+    if (!href) continue;
+    out.push({
+      h: href,
+      t: (clean(a) + ' ||| ' + clean(card.querySelector('[data-automation="physical-location"]'))).slice(0, 300),
+      d: clean(card.querySelector('[data-automation="opportunity-posted-date"]'))
+    });
+    if (out.length >= 60) break;
   }
   return out;
 })()
@@ -853,10 +875,11 @@ def parse_phmc(href, text, base):
     if not m:
         return None
     jid = m.group(1)[:12]
-    # cards read "<title> Today" / "<title> Oct 30, 2026"
-    title = re.sub(r"\s+(?:Today|Yesterday|[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\s*$", "", text.strip()).strip()
+    # cards read "<title> ||| <city>, <ST> <zip>, USA" (see PHMC_EXTRACT_JS)
+    title_part, _, city = text.partition(" ||| ")
+    title = re.sub(r"\s+(?:Today|Yesterday|[A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\s*$", "", title_part.strip()).strip()
     link = "https://recruiting.ultipro.com" + href if href.startswith("/") else href
-    return jid, title, "", link
+    return jid, title, city.strip(), link
 
 
 def parse_tower(href, text, base):
@@ -1035,8 +1058,11 @@ SOURCES = [
         "name": "PHMC (Philadelphia)",
         "base": "https://recruiting.ultipro.com",
         "parse": parse_phmc,
-        # UltiPro cards carry no location; PHMC is a Philadelphia nonprofit and every
-        # posting is in the SE PA region, so we assume the corridor.
+        "extract_js": PHMC_EXTRACT_JS,
+        # UKG's board renders late; at 5s the cards are still empty.
+        "wait": 11.0,
+        # UltiPro cards now carry the city, so the old Philadelphia default would only be a
+        # fallback for a card whose address failed to render.
         "default_location": "Philadelphia, PA",
         "urls": [
             "https://recruiting.ultipro.com/PUB1002/JobBoard/c8784846-358b-1bec-45e9-f994af5fccee?q=&o=postedDateDesc",
@@ -1111,7 +1137,30 @@ def site_host(url: str) -> str:
     return ".".join(labels[-2:])
 
 
+# Words a health system puts in front of its own name. Stripping them means a link from
+# joinwellspan.org to wellspan.org is recognised as the employer we already scrape, not a find.
+HOST_PREFIXES = ("www", "careers", "career", "jobs", "job", "recruiting", "recruit", "apply",
+                 "external", "my", "join", "work", "hire", "talent", "portal", "employment")
+
+
+def org_key(host: str) -> str:
+    """The organisation a host belongs to, ignoring the TLD and those prefixes.
+
+    joinwellspan.org and wellspan.org are the same employer, so one linking to the other is not
+    a new job site worth queueing.
+    """
+    if not host:
+        return ""
+    label = host.split(".")[0]
+    for p in HOST_PREFIXES:
+        if label != p and label.startswith(p):
+            label = label[len(p):]
+            break
+    return label.strip("-")
+
+
 KNOWN_SITE_HOSTS = {site_host(s["base"]) for s in SOURCES if s.get("base")}
+KNOWN_ORG_KEYS = {org_key(h) for h in KNOWN_SITE_HOSTS}
 
 
 def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
@@ -1125,11 +1174,15 @@ def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
             queue = {}
             st["candidates"] = queue
         own = site_host(job.get("url") or "")
+        own_key = org_key(own)
         for url in links or ():
             if not isinstance(url, str):
                 continue
             host = site_host(url)
             if not host or host == own or host in KNOWN_SITE_HOSTS or host in LINK_NOISE:
+                continue
+            key = org_key(host)
+            if key and (key == own_key or key in KNOWN_ORG_KEYS):
                 continue
             entry = queue.get(host)
             if entry:
@@ -1853,6 +1906,39 @@ def selftest() -> int:
         print("%-6s %-50s -> %r | %r" % ("PASS" if ok else "FAIL", want_t[:50],
                                          got[1] if got else None, got[2] if got else None))
 
+    print("\n--- PHMC (UKG) card parser ---")
+    # The card text now carries the real address after " ||| "; the title keeps its posted-date
+    # suffix in the DOM, so it must be stripped here rather than by the anchor regex.
+    hcases = [
+        ("/PUB1002/JobBoard/c8784846-358b-1bec-45e9-f994af5fccee/OpportunityDetail"
+         "?opportunityId=5a211a77-290b-42cf-b922-41d0a3ae27bb",
+         "Housing Stabilization Specialist ||| Philadelphia, PA 19139, USA",
+         "Housing Stabilization Specialist", "Philadelphia, PA 19139, USA"),
+        ("/PUB1002/JobBoard/c8784846-358b-1bec-45e9-f994af5fccee/OpportunityDetail"
+         "?opportunityId=818f1f84-6ac5-4536-aecd-ec3ce12a9eaa",
+         "IBHS Clinician (Fee-for-Service) ||| Norristown, PA 19401, USA",
+         "IBHS Clinician (Fee-for-Service)", "Norristown, PA 19401, USA"),
+        # No address on the card: the title must still survive, and location stays empty so the
+        # source default is used (and flagged as guessed).
+        ("/PUB1002/JobBoard/c8784846-358b-1bec-45e9-f994af5fccee/OpportunityDetail"
+         "?opportunityId=4ab679e6-a68e-4f9f-bb7f-eae5d3b5f5fb",
+         "Case Manager I ||| ", "Case Manager I", ""),
+        # An anchor without an opportunity id is not a posting.
+        ("/PUB1002/JobBoard/c8784846-358b-1bec-45e9-f994af5fccee?q=", "Search", "", ""),
+    ]
+    hfails = 0
+    for href, txt, want_t, want_l in hcases:
+        got = parse_phmc(href, txt, "")
+        if not want_t:
+            ok = got is None
+            shown = got
+        else:
+            ok = got and got[1] == want_t and got[2] == want_l
+            shown = (got[1], got[2]) if got else None
+        if not ok:
+            hfails += 1
+        print("%-6s %-46s -> %r" % ("PASS" if ok else "FAIL", (want_t or "not a posting")[:46], shown))
+
     # Posted-date normalisation: the date must be right, or the board silently lies.
     from datetime import date as _date
     today = _date(2026, 11, 4)
@@ -2088,6 +2174,11 @@ def selftest() -> int:
     scases.append(("all sources known",
                    all(site_host(s["base"]) in KNOWN_SITE_HOSTS for s in SOURCES),
                    sorted(KNOWN_SITE_HOSTS)))
+    # Same employer on a second domain is not a discovery: joinwellspan.org links to wellspan.org.
+    scases.append(("org key joins employer",
+                   org_key("joinwellspan.org") == org_key("wellspan.org") == "wellspan",
+                   (org_key("joinwellspan.org"), org_key("wellspan.org"))))
+    scases.append(("org key keeps tld apart", org_key("example.com") == "example", org_key("example.com")))
 
     stamp = "2026-01-01T00:00:00Z"
     st_d = {}
@@ -2095,7 +2186,8 @@ def selftest() -> int:
            "employer": "WellSpan (York)", "title": "Social Service Coordinator"}
     links = ["https://jobs.example.com/a", "https://jobs.example.com/b",
              "https://www.linkedin.com/company/x", "https://careers.pennmedicine.org/y",
-             "https://www.joinwellspan.org/self", "https://apply.workable.com/foo"]
+             "https://www.joinwellspan.org/self", "https://apply.workable.com/foo",
+             "https://www.wellspan.org/about-us"]
     harvest_hosts(st_d, links, job, stamp)
     q = st_d.get("candidates", {})
     scases.append(("noise+known+self dropped", set(q) == {"example.com", "workable.com"}, sorted(q)))
@@ -2154,15 +2246,16 @@ def selftest() -> int:
 
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
           "%d penn failures, %d posted failures, %d location failures, %d map failures, "
-          "%d boundary failures, %d discovery failures, %d lock failures, %d cases total"
+          "%d boundary failures, %d discovery failures, %d lock failures, %d phmc failures, "
+          "%d cases total"
           % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails, sfails,
-             lkfails,
+             lkfails, hfails,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
              + len(dcases) + len(bcases) + len(lcases) + len(mcases) + len(scases)
-             + len(lk_cases) + 8))
+             + len(lk_cases) + len(hcases) + 8))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
                  and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0
-                 and sfails == 0 and lkfails == 0) else 1
+                 and sfails == 0 and lkfails == 0 and hfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -3055,10 +3148,19 @@ def main() -> int:
     # `full` only when every source answered AND every city routed: a partial scrape or a
     # provider outage must not retire the board (an unresolved place looks out of range).
     place_errors = [k for k, p in places.items() if p.get("error")]
-    st["web_sync"] = push_snapshot(relevant, now, full=(not errors and not place_errors))
+    # A source that returned nothing it usually returns is broken, not empty. Retiring the board
+    # on that run would drop real postings - PHMC's switch to a web-component board looked
+    # exactly like "no new jobs" and would have retired ten live rows.
+    broken = [w for w in health_warnings
+              if "returned 0 postings" in w or "possible partial breakage" in w]
+    st["web_sync"] = push_snapshot(
+        relevant, now, full=(not errors and not place_errors and not broken))
     if place_errors:
         print("⚠️ %d city/cities could not be routed - nothing retired this run (%s)"
               % (len(place_errors), places[place_errors[0]].get("error", "")[:60]))
+    if broken:
+        print("⚠️ %d source(s) look broken - nothing retired this run (%s)"
+              % (len(broken), broken[0][:80]))
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
