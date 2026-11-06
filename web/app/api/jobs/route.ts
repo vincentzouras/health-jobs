@@ -1,20 +1,27 @@
 import { NextResponse } from 'next/server';
-import { ensureSchema, getWatchState, hasDb, JOB_COLUMNS, pool, rowToJob, WATCH_DEFAULTS } from '@/lib/db';
+import {
+  ensureSchema,
+  getSourceCandidates,
+  getWatchState,
+  hasDb,
+  JOB_COLUMNS,
+  pool,
+  rowToJob,
+  WATCH_DEFAULTS,
+} from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const EMPTY_META = {
+  lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+  watch: WATCH_DEFAULTS,
+};
+
 export async function GET() {
   if (!hasDb()) {
     return NextResponse.json(
-      {
-        active: [],
-        archive: [],
-        meta: {
-          lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
-          watch: WATCH_DEFAULTS, db: false,
-        },
-      },
+      { active: [], archive: [], candidates: [], meta: { ...EMPTY_META, db: false } },
       { status: 200 },
     );
   }
@@ -41,6 +48,7 @@ export async function GET() {
     return NextResponse.json({
       active,
       archive,
+      candidates: await getSourceCandidates(),
       meta: {
         lastIngest: metaMap.last_ingest ?? null,
         scannerVersion: metaMap.scanner_version ?? null,
@@ -53,11 +61,8 @@ export async function GET() {
   } catch (err) {
     return NextResponse.json(
       {
-        active: [], archive: [],
-        meta: {
-          lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
-          watch: WATCH_DEFAULTS, db: true,
-        },
+        active: [], archive: [], candidates: [],
+        meta: { ...EMPTY_META, db: true },
         error: String(err).slice(0, 300),
       },
       { status: 200 },

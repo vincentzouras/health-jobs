@@ -20,18 +20,20 @@ Two parts that work together:
 ```
 vez (Pi)                              Vercel                       Postgres (Neon)
 ────────                              ──────                       ───────────────
+every 5m  job_watch.py --gate ── GET /api/watch ──▶ paused? due? ──▶ meta
 07:45  deploy-job-watch.sh ── git pull ──▶ install + selftest
-08:00  watcher/job_watch.py
+when due  watcher/job_watch.py
   ├─ Camofox browser ──▶ 11 job boards
   ├─ relevance filter (regex, deterministic)
   ├─ route card per new match ──▶ openrouteservice (geocode, snap, drive time)
   ├─ Telegram alert ──────────────▶ phone
-  └─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs + job_maps
-       (jobs, scanner hash, maps)             ▲               (status: new/
-                                              │                applied/ignored)
-                                  /api/jobs   │
-       └── GET /api/suppressed ───────────────┘
-           (skips jobs already applied to)
+  ├─ POST /api/ingest ─────────────▶ /api/ingest ──upsert──▶ jobs + job_maps
+  │    (jobs, scanner hash, maps)             ▲               (status: new/
+  │                                           │                applied/ignored)
+  │                               /api/jobs   │
+  ├── GET /api/suppressed ────────────────────┘
+  │    (skips jobs already applied to)
+  └─ POST /api/sources/discover ──▶ source_candidates (sites worth a parser)
 ```
 
 Each card also carries a **route card** — the drive from the nearer of the two cluster pins
@@ -48,6 +50,37 @@ fixed set of regexes in `job_watch.py` (`POSITIVE` / `NEGATIVE` / `URL_REJECT` /
 plus the location rules), covered by `--selftest`. AI is used when *authoring* those rules — e.g.
 reading the "not applicable" reasons off the dashboard and tightening a filter — never at runtime.
 That is what keeps a run free, reproducible and immune to invented postings.
+
+---
+
+## Scanning control, and the site-discovery queue
+
+The dashboard owns whether the Pi scans and how often. A `--gate` cron ticks every 5 minutes, reads
+`/api/watch`, and either exits in under a second or does a real scan:
+
+| Knob | Stored in | Effect |
+|---|---|---|
+| Scanning on/off | `meta.watch_enabled` | Off = the run stops after one HTTP GET, before any browser page opens |
+| Check every | `meta.scan_interval_min` | 30 min … 4 h, or `0` for only-when-asked; clamped to 15 min minimum |
+| Scan now | `meta.scan_requested` | Sets a stamp the next gate tick honours, then clears |
+
+A full scan is ~13–15 minutes (about 60 page loads), so a five-minute gate does not mean a
+five-minute scan: the interval is the real cadence, and ~30 minutes is the practical floor.
+
+While screening new postings the watcher also reads the outbound links of each detail page it opens,
+and records any **job site it does not scrape** in a queue (`source_candidates`). The board lists
+those under *Site discovery*, newest evidence first, with **Watch** / **Dismiss**. Marking a site
+queued records the intent only — a new site needs a parser written and tested against it, so
+nothing is scraped unattended. That is the loop: the queue shows where the next parser is worth
+writing, and `--discover` fills the queue from the board already on file (25 detail pages by
+default):
+
+```bash
+~/.hermes/scripts/job_watch.py --discover
+```
+
+Because a candidate is a registrable domain (`careers.foo.org` and `foo.org` are one entry),
+analytics/CDN/social hosts are filtered out, and the queue is capped at 60 entries.
 
 ---
 
@@ -96,6 +129,9 @@ web/
     theme.ts            MUI theme (Roboto, flat buttons)
     Providers.tsx       theme + CssBaseline wrapper
     api/ingest/         POST snapshot from the Pi (token auth, idempotent upsert)
+    api/watch/          GET/POST the scanning knobs (on/off, interval, scan now)
+    api/sources/        GET the discovery queue, POST watch/dismiss on a host
+    api/sources/discover/  POST the Pi's candidate hosts (token auth)
     api/jobs/           GET active + archive
     api/jobs/[id]/      PATCH status, DELETE an addressed not-applicable row
     api/suppressed/     GET jobs already applied to (consumed by the Pi)
@@ -169,6 +205,6 @@ ssh vincent@vez '~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3 
   ~/.hermes/scripts/job_watch.py --selftest'
 ```
 
-Run `--selftest` after **any** change to the filter rules — it has 95 cases covering title
-matching, geography, licensure screens, and the parsers.
+Run `--selftest` after **any** change to the filter rules — it has 179 cases covering title
+matching, geography, licensure screens, the parsers, the gate logic and source discovery.
 

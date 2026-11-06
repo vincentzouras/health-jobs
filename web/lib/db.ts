@@ -34,6 +34,88 @@ export interface Job {
 /** Longest dismissal note we keep; anything past this is truncated. */
 export const MAX_REASON = 400;
 
+/** A job site we noticed but do not scrape yet: the queue behind "improves over time". */
+export type CandidateStatus = 'seen' | 'wanted' | 'ignored';
+
+export interface SourceCandidate {
+  host: string;
+  firstSeen: string;
+  lastSeen: string;
+  /** How many links pointed at this host, so the queue can be ordered by evidence. */
+  seenCount: number;
+  sampleUrl: string | null;
+  sampleTitle: string | null;
+  employer: string | null;
+  status: CandidateStatus;
+}
+
+/** Rows kept in the queue, newest evidence first; 'ignored' never comes back. */
+export async function getSourceCandidates(limit = 30): Promise<SourceCandidate[]> {
+  const { rows } = await pool().query(
+    `SELECT host, first_seen, last_seen, seen_count, sample_url, sample_title, employer, status
+       FROM source_candidates
+      WHERE status <> 'ignored'
+      ORDER BY (status = 'wanted') DESC, seen_count DESC, last_seen DESC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows.map((r) => ({
+    host: String(r.host),
+    firstSeen: new Date(r.first_seen as string).toISOString(),
+    lastSeen: new Date(r.last_seen as string).toISOString(),
+    seenCount: Number(r.seen_count) || 0,
+    sampleUrl: (r.sample_url as string | null) ?? null,
+    sampleTitle: (r.sample_title as string | null) ?? null,
+    employer: (r.employer as string | null) ?? null,
+    status: r.status as CandidateStatus,
+  }));
+}
+
+/** Merge the Pi's queue in, keeping the first sighting and the highest count. */
+export async function upsertSourceCandidates(
+  rows: { host?: unknown; first_seen?: unknown; last_seen?: unknown; seen_count?: unknown;
+          sample_url?: unknown; sample_title?: unknown; employer?: unknown }[],
+): Promise<number> {
+  let stored = 0;
+  for (const r of rows) {
+    const host = typeof r.host === 'string' ? r.host.trim().toLowerCase().slice(0, 120) : '';
+    if (!host || !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) continue;
+    const stamp = (v: unknown) =>
+      typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v) : null;
+    const { rowCount } = await pool().query(
+      `INSERT INTO source_candidates
+         (host, first_seen, last_seen, seen_count, sample_url, sample_title, employer)
+       VALUES ($1, COALESCE($2, now()), COALESCE($3, now()), $4, $5, $6, $7)
+       ON CONFLICT (host) DO UPDATE
+         SET last_seen    = GREATEST(source_candidates.last_seen, COALESCE(EXCLUDED.last_seen, now())),
+             first_seen   = LEAST(source_candidates.first_seen, COALESCE(EXCLUDED.first_seen, now())),
+             seen_count   = GREATEST(source_candidates.seen_count, EXCLUDED.seen_count),
+             sample_url   = COALESCE(source_candidates.sample_url, EXCLUDED.sample_url),
+             sample_title = COALESCE(source_candidates.sample_title, EXCLUDED.sample_title),
+             employer     = COALESCE(source_candidates.employer, EXCLUDED.employer)`,
+      [
+        host,
+        stamp(r.first_seen),
+        stamp(r.last_seen),
+        Math.max(1, Math.min(100_000, Math.round(Number(r.seen_count) || 1))),
+        typeof r.sample_url === 'string' ? r.sample_url.slice(0, 300) : null,
+        typeof r.sample_title === 'string' ? r.sample_title.slice(0, 200) : null,
+        typeof r.employer === 'string' ? r.employer.slice(0, 120) : null,
+      ],
+    );
+    if (rowCount) stored += 1;
+  }
+  return stored;
+}
+
+export async function setCandidateStatus(host: string, status: CandidateStatus): Promise<boolean> {
+  const { rowCount } = await pool().query(
+    `UPDATE source_candidates SET status = $2 WHERE host = $1`,
+    [host.trim().toLowerCase().slice(0, 120), status],
+  );
+  return Boolean(rowCount);
+}
+
 /** A route is ~1–8 KB of polyline; anything this big is not a route. */
 export const MAX_GEOMETRY = 20_000;
 
@@ -137,6 +219,20 @@ export async function ensureSchema(): Promise<void> {
       `);
       // Which of the two clusters the posting belongs to (added when the board split in two).
       await pool().query(`ALTER TABLE job_maps ADD COLUMN IF NOT EXISTS cluster TEXT;`);
+      // Sites we ran into but do not scrape yet. Kept as a queue a human works through: adding a
+      // source means writing and validating a parser, which is not something to do unattended.
+      await pool().query(`
+        CREATE TABLE IF NOT EXISTS source_candidates (
+          host         TEXT PRIMARY KEY,
+          first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+          last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+          seen_count   INTEGER NOT NULL DEFAULT 1,
+          sample_url   TEXT,
+          sample_title TEXT,
+          employer     TEXT,
+          status       TEXT NOT NULL DEFAULT 'seen'
+        );
+      `);
       // The first cut stored a rendered PNG instead; that shape is not compatible and the rows
       // carried nothing worth keeping, so swap the column out rather than leave a dead one.
       const legacy = await pool().query(

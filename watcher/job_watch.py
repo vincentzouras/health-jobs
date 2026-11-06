@@ -11,6 +11,8 @@ Modes
   --baseline     record everything currently live, alert nothing
   --selftest     run the relevance filter against a labelled corpus, print pass/fail
   --backfill-posted  read posted dates off detail pages for known jobs that lack one
+  --discover     fill the "sites we do not scrape yet" queue from known postings
+  --gate         scan only when the dashboard says so (paused / interval / "scan now")
   --dump         print every posting that passed/didn't pass the filter (debug)
   --resimulate N drop N random seen keys so they re-alert (validation only)
 
@@ -511,6 +513,25 @@ BODY_JS = r"""
 })()
 """
 
+# Where a posting sends you is the cheapest signal about which applicant tracking system an
+# employer actually uses, and the detail tab is already open when this runs.
+LINKS_JS = r"""
+(() => {
+  const out = [], seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    let u;
+    try { u = new URL(a.getAttribute('href'), document.baseURI); } catch (e) { continue; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+    const k = u.origin + u.pathname;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(u.href.slice(0, 300));
+    if (out.length >= 80) break;
+  }
+  return out;
+})()
+"""
+
 # AmeriHealth (Phenom) wraps each result in a container whose text holds the title,
 # the city and the requisition id; the anchor alone carries only the title.
 AH_EXTRACT_JS = r"""
@@ -604,18 +625,33 @@ def _fetch_jobs(url: str, wait: float = 5.0, extract_js: str = None):
 
 
 def fetch_detail(url: str, wait: float = 4.0):
-    """Return (main_text_6k, full_text_20k) for a posting. Empty strings on failure."""
+    """(main_text_6k, full_text_20k, outbound_links) for a posting.
+
+    The third element is what the source-discovery queue feeds on; an empty list is fine.
+    Everything is empty on failure; the caller then simply learns less.
+    """
     tab = camo("POST", "/tabs", {"userId": USER, "sessionKey": "jobwatch", "url": url})
     tid = tab.get("tabId") or tab.get("id") or (tab.get("tab") or {}).get("tabId")
     if not tid:
-        return "", ""
+        return "", "", []
     try:
         time.sleep(wait)
         ev = camo("POST", "/tabs/%s/evaluate" % tid, {"userId": USER, "expression": BODY_JS})
         res = ev.get("result") or {}
         if isinstance(res, str):
-            return res, res
-        return (res.get("body") or ""), (res.get("full") or res.get("body") or "")
+            body, full = res, res
+        else:
+            body = res.get("body") or ""
+            full = res.get("full") or res.get("body") or ""
+        links = []
+        try:
+            lv = camo("POST", "/tabs/%s/evaluate" % tid, {"userId": USER, "expression": LINKS_JS})
+            got = lv.get("result")
+            if isinstance(got, list):
+                links = [u for u in got if isinstance(u, str)]
+        except Exception:
+            pass
+        return body, full, links
     finally:
         try:
             camo("DELETE", "/tabs/%s?userId=%s" % (tid, USER), timeout=20)
@@ -624,9 +660,9 @@ def fetch_detail(url: str, wait: float = 4.0):
 
 
 def posted_for(url: str, wait: float = 4.0):
-    """(body, posted_date) for a posting — one page load, used by the detail screen."""
-    body, full = fetch_detail(url, wait)
-    return body, (posted_from_body(full) or posted_from_body(body))
+    """(body, posted_date, links) for a posting — one page load, used by the detail screen."""
+    body, full, links = fetch_detail(url, wait)
+    return body, (posted_from_body(full) or posted_from_body(body)), links
 
 
 # --------------------------------------------------------------------------
@@ -1023,6 +1059,111 @@ SOURCES = [
     # either injected out-of-region false positives or required opening every posting.
     # Use the saved Indeed search for UPMC instead.
 ]
+
+
+# --------------------------------------------------------------------------
+# Source discovery: the queue behind "the app improves over time".
+#
+# Every detail page we open is full of links, and the ones that leave the board are usually the
+# employer's real applicant tracking system (Workday, iCIMS, Taleo, Greenhouse...). Recording
+# those hosts turns "a job we found" into "a site worth adding a parser for". Nothing is added
+# automatically: a new site needs a parser someone writes and validates, so the queue surfaces
+# candidates on the board and a human decides.
+# --------------------------------------------------------------------------
+# Analytics, CDNs, social and legal boilerplate appear on nearly every careers page. Recording
+# them would bury the handful of real job hosts.
+LINK_NOISE = {
+    "facebook.com", "instagram.com", "twitter.com", "x.com", "linkedin.com", "youtube.com",
+    "youtu.be", "vimeo.com", "tiktok.com", "pinterest.com", "glassdoor.com", "indeed.com",
+    "ziprecruiter.com", "google.com", "googleapis.com", "gstatic.com", "googletagmanager.com",
+    "google-analytics.com", "doubleclick.net", "bing.com", "microsoft.com", "apple.com",
+    "adobe.com", "cloudflare.com", "cloudfront.net", "akamaihd.net", "akamaized.net",
+    "amazonaws.com", "azureedge.net", "hotjar.com", "newrelic.com", "nr-data.net", "sentry.io",
+    "segment.com", "mixpanel.com", "onetrust.com", "cookielaw.org", "trustarc.com",
+    "addthis.com", "sharethis.com", "bit.ly", "w3.org", "schema.org", "typekit.net",
+    "fonts.net", "fontawesome.com", "bootstrapcdn.com", "jsdelivr.net", "unpkg.com",
+    "wikipedia.org", "mapquest.com", "openstreetmap.org", "icims.com",
+}
+# iCIMS is in the noise list deliberately: nearly every board links to it for "apply", and its
+# pages are JS shells with no server-rendered listing, so it would sit in the queue forever.
+
+# A hard ceiling: discovery is a to-do list, not a crawl log.
+MAX_CANDIDATES = 60
+
+
+def site_host(url: str) -> str:
+    """The site identity of a URL: registrable domain, no www, no careers subdomain.
+
+    Grouping by registrable domain keeps `careers.foo.org` and `foo.org` as one entry, which is
+    what "add this site" means to a person.
+    """
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower().strip(".")
+    except ValueError:
+        return ""
+    if not host or "." not in host:
+        return ""
+    labels = host.split(".")
+    # Two-part public suffixes (co.uk, com.au, ...) keep three labels.
+    if len(labels) >= 3 and labels[-2] in {"co", "com", "org", "net", "gov", "ac"} \
+            and len(labels[-1]) == 2:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+KNOWN_SITE_HOSTS = {site_host(s["base"]) for s in SOURCES if s.get("base")}
+
+
+def harvest_hosts(st: dict, links, job: dict, now: str) -> int:
+    """Fold one posting's outbound links into the candidate queue. Returns the queue size.
+
+    Never raises: discovery is a convenience, and a broken link list must not fail a scan.
+    """
+    try:
+        queue = st.get("candidates")
+        if not isinstance(queue, dict):
+            queue = {}
+            st["candidates"] = queue
+        own = site_host(job.get("url") or "")
+        for url in links or ():
+            if not isinstance(url, str):
+                continue
+            host = site_host(url)
+            if not host or host == own or host in KNOWN_SITE_HOSTS or host in LINK_NOISE:
+                continue
+            entry = queue.get(host)
+            if entry:
+                entry["n"] = int(entry.get("n", 0)) + 1
+                entry["last"] = now
+            elif len(queue) < MAX_CANDIDATES:
+                queue[host] = {
+                    "first": now, "last": now, "n": 1, "url": url[:300],
+                    "title": (job.get("title") or "")[:120],
+                    "employer": job.get("employer") or "",
+                }
+        return len(queue)
+    except Exception:
+        return -1
+
+
+def push_candidates(st: dict, run_at: str) -> str:
+    """Send the queue to the board. Cheap enough to send in full every run: it is one row each."""
+    if not WEB_URL or not WEB_TOKEN:
+        return "skipped (no web credentials)"
+    queue = st.get("candidates") or {}
+    if not queue:
+        return "skipped (nothing discovered)"
+    rows = [{"host": h, "first_seen": v.get("first"), "last_seen": v.get("last"),
+             "seen_count": v.get("n", 1), "sample_url": v.get("url"),
+             "sample_title": v.get("title"), "employer": v.get("employer")}
+            for h, v in sorted(queue.items())]
+    try:
+        _http_json("POST", WEB_URL + "/api/sources/discover",
+                   {"run_at": run_at, "candidates": rows},
+                   {"x-ingest-token": WEB_TOKEN}, timeout=60)
+    except Exception as e:
+        return "FAILED: %s" % str(e)[:120]
+    return "ok (%d candidate%s)" % (len(rows), "" if len(rows) == 1 else "s")
 
 
 # --------------------------------------------------------------------------
@@ -1890,14 +2031,74 @@ def selftest() -> int:
     print("\n--- distance boundary (%d min from either cluster) ---" % CLUSTER_MAX_MINUTES)
     bfails = _boundary_selftest()
 
+    print("\n--- source discovery ---")
+    scases = []
+    for url, want in [
+        ("https://careers.christianacare.org/job-search/?keyword=x", "christianacare.org"),
+        ("https://www.joinwellspan.org/job-listings?jobId=1", "joinwellspan.org"),
+        ("https://jeffersonhealth.wd5.myworkdayjobs.com/ThomasJeffersonExternal", "myworkdayjobs.com"),
+        ("https://recruiting.ultipro.com/PUB1002/JobBoard/c878", "ultipro.com"),
+        ("https://www.governmentjobs.com/careers/chesco?page=2", "governmentjobs.com"),
+        ("https://jobs.foo.co.uk/apply", "foo.co.uk"),
+        ("https://WWW.Example.COM/a", "example.com"),
+        ("mailto:jobs@foo.org", ""),
+        ("/relative/path", ""),
+    ]:
+        got = site_host(url)
+        scases.append(("site_host %s" % url[:40], got == want, got))
+    # Every board we already scrape must be recognised as known, or every run would queue it.
+    scases.append(("all sources known",
+                   all(site_host(s["base"]) in KNOWN_SITE_HOSTS for s in SOURCES),
+                   sorted(KNOWN_SITE_HOSTS)))
+
+    stamp = "2026-01-01T00:00:00Z"
+    st_d = {}
+    job = {"url": "https://www.joinwellspan.org/job-listings?jobId=1",
+           "employer": "WellSpan (York)", "title": "Social Service Coordinator"}
+    links = ["https://jobs.example.com/a", "https://jobs.example.com/b",
+             "https://www.linkedin.com/company/x", "https://careers.pennmedicine.org/y",
+             "https://www.joinwellspan.org/self", "https://apply.workable.com/foo"]
+    harvest_hosts(st_d, links, job, stamp)
+    q = st_d.get("candidates", {})
+    scases.append(("noise+known+self dropped", set(q) == {"example.com", "workable.com"}, sorted(q)))
+    scases.append(("repeat counted", q.get("example.com", {}).get("n") == 2,
+                   q.get("example.com", {}).get("n")))
+    scases.append(("sample kept", q.get("workable.com", {}).get("url") == "https://apply.workable.com/foo",
+                   q.get("workable.com", {}).get("url")))
+    scases.append(("context kept",
+                   q.get("example.com", {}).get("employer") == "WellSpan (York)"
+                   and q.get("example.com", {}).get("title") == "Social Service Coordinator",
+                   (q.get("example.com", {}).get("employer"), q.get("example.com", {}).get("title"))))
+    # A second posting on a known candidate must raise the count, never reset it.
+    harvest_hosts(st_d, ["https://jobs.example.com/c"], job, "2026-01-02T00:00:00Z")
+    scases.append(("count is monotonic", q.get("example.com", {}).get("n") == 3,
+                   q.get("example.com", {}).get("n")))
+    scases.append(("last touched", q.get("example.com", {}).get("last") == "2026-01-02T00:00:00Z",
+                   q.get("example.com", {}).get("last")))
+    # Bounded: a board that links out to a hundred hosts must not grow the state file.
+    st_cap = {}
+    harvest_hosts(st_cap, ["https://site%d.com/x" % i for i in range(120)], job, stamp)
+    scases.append(("capped at %d" % MAX_CANDIDATES,
+                   len(st_cap.get("candidates", {})) == MAX_CANDIDATES,
+                   len(st_cap.get("candidates", {}))))
+    scases.append(("garbage in, no raise", harvest_hosts({}, [None, 5, ""], job, stamp) == 0,
+                   harvest_hosts({}, [None, 5, ""], job, stamp)))
+    sfails = 0
+    for name, ok, got in scases:
+        if not ok:
+            sfails += 1
+        print("%-6s %-24s -> %r" % ("PASS" if ok else "FAIL", name, got))
+
+
     print("\n%d title failures, %d derived failures, %d detail failures, %d jefferson failures, "
           "%d penn failures, %d posted failures, %d location failures, %d map failures, "
-          "%d boundary failures, %d cases total"
-          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails,
+          "%d boundary failures, %d discovery failures, %d cases total"
+          % (fails, dvfails, dfails, jfails, pfails, postfails, lfails, mfails, bfails, sfails,
              len(corpus) + len(derived_cases) + len(detail_corpus) + len(jcases) + len(pcases)
-             + len(dcases) + len(bcases) + len(lcases) + len(mcases) + 8))
+             + len(dcases) + len(bcases) + len(lcases) + len(mcases) + len(scases) + 8))
     return 0 if (fails == 0 and dvfails == 0 and dfails == 0 and jfails == 0 and pfails == 0
-                 and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0) else 1
+                 and postfails == 0 and lfails == 0 and mfails == 0 and bfails == 0
+                 and sfails == 0) else 1
 
 
 def backfill_posted(st) -> int:
@@ -1914,7 +2115,7 @@ def backfill_posted(st) -> int:
     updates, hits = {}, 0
     for k, v in todo:
         try:
-            _body, got = posted_for(v["url"])
+            _body, got, _links = posted_for(v["url"])
         except Exception as e:
             print("  skip %-40s %s" % ((v.get("title") or "")[:40], str(e)[:60]))
             continue
@@ -1960,7 +2161,7 @@ def backfill_location(st) -> int:
     updates, hits, moved, empty = {}, 0, [], 0
     for k, v in todo:
         try:
-            body, _posted = posted_for(v["url"])
+            body, _posted, _links = posted_for(v["url"])
         except Exception as e:
             print("  skip %-40s %s" % ((v.get("title") or "")[:40], str(e)[:60]))
             continue
@@ -2554,6 +2755,43 @@ def relevant_from_state(st) -> dict:
     return out
 
 
+def discover_sources(st, limit: int = 25) -> int:
+    """One-off pass: open known postings and note the job sites they link to.
+
+    The daily run already harvests while it screens genuinely new postings, but that only
+    produces a candidate once a week. This walks the board we already know about instead, so the
+    queue fills the first time it is asked rather than trickling in.
+    """
+    known = relevant_from_state(st)
+    todo = sorted(known.items())
+    print("discover: %d known postings, reading %d detail page(s)" % (len(todo), min(limit, len(todo))))
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    before = len(st.get("candidates") or {})
+    empty = 0
+    for i, (_k, job) in enumerate(todo[:limit], 1):
+        try:
+            body, _posted, links = posted_for(job["url"], wait=3.0)
+        except Exception as e:
+            print("  skip %-40s %s" % ((job.get("title") or "")[:40], str(e)[:60]))
+            continue
+        if not body:
+            empty += 1
+        size = harvest_hosts(st, links, job, now)
+        print("  %2d/%d %-20s %-38s links=%-3d queue=%s"
+              % (i, min(limit, len(todo)), job["employer"][:20], (job.get("title") or "")[:38],
+                 len(links or ()), size))
+    save_state(st)
+    queue = st.get("candidates") or {}
+    print("\n%d candidate site(s), %d new" % (len(queue), len(queue) - before))
+    for host, v in sorted(queue.items(), key=lambda kv: -int(kv[1].get("n", 0))):
+        print("  %-32s %3d link(s)  last %s  %s"
+              % (host, int(v.get("n", 0)), v.get("last", "?"), (v.get("sample_url") or "")[:70]))
+    if empty:
+        print("WARNING: %d detail page(s) returned no text - browser problem, not 'no links'" % empty)
+    print("dashboard sync: %s" % push_candidates(st, now))
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--selftest" in args:
@@ -2570,6 +2808,8 @@ def main() -> int:
         return check_maps()
     if "--backfill-maps" in args:
         return backfill_maps(st, relevant_from_state(st))
+    if "--discover" in args:
+        return discover_sources(st)
 
     # The dashboard owns "is scanning on", how often, and whether a scan was asked for. Read it
     # before any scraping, so switching it off costs one HTTP GET and no page loads.
@@ -2679,9 +2919,11 @@ def main() -> int:
             verified.append(k)
             continue
         try:
-            body, found_posted = posted_for(job["url"])
+            body, found_posted, links = posted_for(job["url"])
         except Exception:
-            body, found_posted = "", None
+            body, found_posted, links = "", None, []
+        # Free side effect of a tab we already opened: note any site we do not scrape.
+        harvest_hosts(st, links, job, now)
         if not job.get("posted") and found_posted:
             job["posted"] = found_posted
             st["seen"].setdefault(k, {})["posted"] = found_posted
@@ -2751,6 +2993,8 @@ def main() -> int:
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
+    if st.get("candidates"):
+        st["web_sync_sources"] = push_candidates(st, now)
     if watch.get("requestedAt"):
         # This run was the one asked for; drop the request so the gate does not repeat it.
         clear_scan_request()

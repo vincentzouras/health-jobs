@@ -1,17 +1,29 @@
 import JobBoard from './JobBoard';
-import { ensureSchema, getWatchState, hasDb, JOB_COLUMNS, pool, rowToJob, WATCH_DEFAULTS } from '@/lib/db';
+import {
+  ensureSchema,
+  getSourceCandidates,
+  getWatchState,
+  hasDb,
+  JOB_COLUMNS,
+  pool,
+  rowToJob,
+  WATCH_DEFAULTS,
+} from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+
+const EMPTY_META = {
+  lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+  watch: WATCH_DEFAULTS,
+};
 
 async function load() {
   if (!hasDb()) {
     return {
       active: [],
       archive: [],
-      meta: {
-        lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
-        watch: WATCH_DEFAULTS, db: false,
-      },
+      candidates: [],
+      meta: { ...EMPTY_META, db: false },
     };
   }
   try {
@@ -32,6 +44,7 @@ async function load() {
     return {
       active: jobs.filter((j) => j.status === 'new'),
       archive: jobs.filter((j) => j.status === 'applied' || j.status === 'ignored'),
+      candidates: await getSourceCandidates(),
       meta: {
         lastIngest: metaMap.last_ingest ?? null,
         scannerVersion: metaMap.scanner_version ?? null,
@@ -45,10 +58,8 @@ async function load() {
     return {
       active: [],
       archive: [],
-      meta: {
-        lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
-        watch: WATCH_DEFAULTS, db: true,
-      },
+      candidates: [],
+      meta: { ...EMPTY_META, db: true },
       error: String(err).slice(0, 300),
     };
   }

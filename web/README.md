@@ -11,10 +11,11 @@ deleting it.
 vez (Pi)                           Vercel                            Postgres
 ────────                           ──────                            ────────
 job_watch.py   ──POST /api/ingest──▶  API (token auth)  ──upsert──▶    jobs
-  (8:00 daily)                        /api/jobs         ◀──select──
+  (every 5m: --gate)                  /api/jobs         ◀──select──
                                       /api/jobs/[id]    ──update──▶   status
-   ▲                                  /api/suppressed   ◀──select──
-   └──────────GET /api/suppressed ──────────┘   (so applied jobs stop re-alerting)
+   ▲                                  /api/watch        ◀──knobs───   meta
+   ├──────────GET /api/suppressed ──────────┘   (so applied jobs stop re-alerting)
+   └──POST /api/sources/discover ───▶ source_candidates (sites worth a parser)
 ```
 
 ## Endpoints
@@ -25,6 +26,11 @@ job_watch.py   ──POST /api/ingest──▶  API (token auth)  ──upsert�
 | `PATCH` | `/api/jobs/:id` | public | body `{ "status": "new" \| "applied" \| "ignored", "reason"?: string }` |
 | `DELETE` | `/api/jobs/:id` | public | purges an `ignored` row outright (409 for `applied`) |
 | `POST` | `/api/ingest` | `x-ingest-token` header | body `{ "run_at": iso, "scanner"?: string, "jobs": [{ employer, job_id, title, location, url }], "maps"?: [{ employer, job_id, drive_min, drive_mi, origin_label, geometry }] }` |
+| `GET` | `/api/watch` | public | `{ enabled, intervalMin, requestedAt }` — the scanning knobs the Pi reads every run |
+| `POST` | `/api/watch` | public | body `{ "enabled"?: bool, "intervalMin"?: number, "requestScan"?: true, "clearRequest"?: true }` |
+| `GET` | `/api/sources` | public | `{ candidates: [{ host, seenCount, lastSeen, employer, status }] }` — sites not scraped yet |
+| `POST` | `/api/sources` | public | body `{ "host": string, "action": "watch" \| "dismiss" \| "reset" }` |
+| `POST` | `/api/sources/discover` | `x-ingest-token` header | body `{ "run_at": iso, "candidates": [{ host, first_seen, last_seen, seen_count, sample_url, employer }] }` |
 | `GET` | `/api/suppressed` | public | `{ suppressed: [{ employer, id }] }` for the Pi |
 
 Job ids are `sha1(employer + "|" + job_id).slice(0,16)`, computed server-side, so the Pi

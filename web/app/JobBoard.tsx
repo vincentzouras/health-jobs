@@ -20,7 +20,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import type { Job, Status } from '@/lib/db';
+import type { Job, SourceCandidate, Status } from '@/lib/db';
 import { AREA_LABEL, type Area } from '@/lib/areas';
 import { employerColor, type EmployerColor } from './employerColor';
 import RouteMap from './RouteMap';
@@ -28,6 +28,8 @@ import RouteMap from './RouteMap';
 interface ApiPayload {
   active: Job[];
   archive: Job[];
+  /** Sites the scanner has seen but does not scrape yet; empty when nothing new turned up. */
+  candidates: SourceCandidate[];
   meta: {
     lastIngest: string | null;
     scannerVersion: string | null;
@@ -319,6 +321,25 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [watch, setWatch] = useState(initial.meta.watch);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const setSourceAction = useCallback(
+    async (host: string, action: 'watch' | 'dismiss' | 'reset') => {
+      try {
+        const res = await fetch('/api/sources', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ host, action }),
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { candidates: SourceCandidate[] };
+          setData((d) => ({ ...d, candidates: json.candidates }));
+        }
+      } catch {
+        /* the row simply keeps its old state */
+      }
+    },
+    [],
+  );
+
   const setWatchMode = useCallback(
     async (body: { enabled?: boolean; intervalMin?: number; requestScan?: boolean }) => {
       try {
@@ -499,7 +520,13 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             Within a 50 minute drive of York or West Chester
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Scans for new jobs every morning
+            {!watch.enabled
+              ? 'Scanning is paused'
+              : watch.intervalMin
+                ? `Scanning every ${watch.intervalMin >= 60
+                    ? `${Math.round((watch.intervalMin / 60) * 10) / 10} hr`
+                    : `${watch.intervalMin} min`}`
+                : 'Scanning only when asked'}
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Last checked {rel(data.meta.lastIngest)}
@@ -555,6 +582,54 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             </Typography>
           )}
         </Paper>
+
+        {data.candidates?.length > 0 && (
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Stack spacing={1}>
+              <Box>
+                <Typography variant="subtitle2">Site discovery</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Job sites the scanner ran into but does not watch yet. Marking one queued only
+                  records the intent — a parser for it gets written and tested before it can scan.
+                </Typography>
+              </Box>
+              <Divider />
+              {data.candidates.map((c) => (
+                <Stack
+                  key={c.host}
+                  direction="row"
+                  spacing={1}
+                  useFlexGap
+                  sx={{ alignItems: 'center', flexWrap: 'wrap' }}
+                >
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                    {c.host}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                    {c.seenCount} link{c.seenCount === 1 ? '' : 's'}
+                    {c.employer ? ` · ${c.employer}` : ''} · last seen {rel(c.lastSeen)}
+                  </Typography>
+                  {c.status === 'wanted' ? (
+                    <Chip size="small" color="success" variant="outlined" label="Queued" />
+                  ) : (
+                    <>
+                      <Button size="small" onClick={() => void setSourceAction(c.host, 'watch')}>
+                        Watch
+                      </Button>
+                      <Button
+                        size="small"
+                        color="inherit"
+                        onClick={() => void setSourceAction(c.host, 'dismiss')}
+                      >
+                        Dismiss
+                      </Button>
+                    </>
+                  )}
+                </Stack>
+              ))}
+            </Stack>
+          </Paper>
+        )}
 
         {!data.meta.db && (
           <Alert severity="warning">

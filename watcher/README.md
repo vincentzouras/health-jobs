@@ -56,16 +56,23 @@ regexes, and `--selftest` is what protects them.
 PY=~/.hermes/tools/python-3.14.7+20260901-linux-arm64/bin/python3
 
 $PY job_watch.py             # normal run — silent unless something is new
+$PY job_watch.py --gate      # scan only if the dashboard says so (paused / interval / scan now)
 $PY job_watch.py --dump      # show relevant / new / rejected
 $PY job_watch.py --dump --dump-all
-$PY job_watch.py --selftest  # 149 filter + parser tests; run after ANY rule change
+$PY job_watch.py --selftest  # 179 filter + parser + gate + discovery tests; run after ANY rule change
 $PY job_watch.py --baseline  # mark everything currently live as already-known
 $PY job_watch.py --backfill-posted   # read posted dates off detail pages for jobs lacking one
 $PY job_watch.py --backfill-location # replace a source's guessed city with the real one
 $PY job_watch.py --backfill-maps     # resolve route cards for postings that lack one
+$PY job_watch.py --discover          # fill the "sites we do not scrape yet" queue from the board
 $PY job_watch.py --check-origin      # re-geocode the pinned start point and report drift
 $PY job_watch.py --check-maps        # prove ORS_KEY end to end (geocode, snap, route)
 ```
+
+`--gate` is what the 5-minute cron runs. It costs one HTTP GET and exits in under a second when the
+dashboard says paused, too soon, or on-demand-only; otherwise it does a full scan. `--discover`
+walks detail pages of postings already on file (25 by default) and records any job host that is not
+one of the 11 sources, so the queue on the board fills without waiting for new postings.
 
 ## Geography: two clusters, 50 minutes each
 
