@@ -880,19 +880,28 @@ def parse_tower(href, text, base):
     return jid, title, "", link
 
 
-# BambooHR boards are a plain server-rendered list: <a href="/careers/123">Title</a>.
+# BambooHR boards are a plain server-rendered list: <a href="/careers/123">Title</a>, with the
+# city in a sibling column rather than inside the link, so climb a few levels for it.
 BAMBOO_JS = r"""
 (() => {
   const out = [], seen = new Set();
+  const CITY = /([A-Z][A-Za-z.'\-]+(?: [A-Z][A-Za-z.'\-]+)*),\s*([A-Z]{2})\b/;
   for (const a of document.querySelectorAll('a[href*="/careers/"]')) {
     const h = a.getAttribute('href') || '';
     if (!/\/careers\/\d+/.test(h)) continue;
     const base = h.split('?')[0];
     if (seen.has(base)) continue;
     seen.add(base);
-    const row = a.closest('li,tr,div[class*="job"],div[class*="opening"]') || a.parentElement;
-    const text = ((row && row.innerText) || a.innerText || '').replace(/\s+/g, ' ').trim();
-    out.push({ h: base, t: text.slice(0, 200), d: '' });
+    const title = (a.innerText || '').replace(/\s+/g, ' ').trim();
+    let city = '';
+    let n = a;
+    for (let i = 0; i < 5 && n && !city; i++) {
+      n = n.parentElement;
+      const t = n ? (n.innerText || '').replace(/\s+/g, ' ').trim() : '';
+      const m = CITY.exec(t);
+      if (m && t.length < 300) city = m[1] + ', ' + m[2];
+    }
+    out.push({ h: base, t: city ? (title + ' ||| ' + city) : title, d: '' });
     if (out.length >= 60) break;
   }
   return out;
@@ -906,17 +915,18 @@ def parse_bamboohr(href, text, base):
         return None
     jid = m.group(1)
     raw = (text or "").strip()
-    loc = ""
-    # Cards read "<title> - <city>, <ST>" or put the city on its own line; either way the city is
-    # the last segment before the ", ST" tail.
-    tail = re.search(r",\s*([A-Z]{2})\s*$", raw)
-    if tail:
-        head = raw[:tail.start()]
-        city = re.split(r"\s[-\u2013|]\s|,|\n", head)[-1].strip()
-        if city:
-            loc = "%s, %s" % (city, tail.group(1))
-            raw = head[:len(head) - len(city)]
-    title = re.sub(r"\s+", " ", raw).strip(" |-—,\n")
+    title_part, _, city_hint = raw.partition(" ||| ")
+    title = re.sub(r"\s+", " ", title_part).strip(" |-—,\n")
+    loc = city_hint.strip()
+    if not loc:
+        # Older cards put the city in the title text: "<title> - <city>, <ST>".
+        tail = re.search(r",\s*([A-Z]{2})\s*$", raw)
+        if tail:
+            head = raw[:tail.start()]
+            city = re.split(r"\s[-\u2013|]\s|,|\n", head)[-1].strip()
+            if city:
+                loc = "%s, %s" % (city, tail.group(1))
+                title = re.sub(r"\s+", " ", head[:len(head) - len(city)]).strip(" |-—,\n")
     link = base + href if href.startswith("/") else href
     return jid, title, loc, link
 
