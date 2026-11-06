@@ -1398,6 +1398,23 @@ def _boundary_selftest() -> int:
             fails += 1
         print("%-6s %-20s -> cached=%s" % ("PASS" if ok else "FAIL", "bad address cached",
                                            bool(st_b["routes"])))
+
+        # Moving a pin must invalidate everything measured against the old one.
+        route_summary = fake_route
+        st_p = {"geo": {}, "routes": {}}
+        resolve_route("Lancaster, PA", st_p)
+        rec = st_p["routes"].get("Lancaster, PA") or {}
+        ok = rec.get("pins") == pin_stamp() and rec.get("cluster") == "york"
+        if not ok:
+            fails += 1
+        print("%-6s %-20s -> %s" % ("PASS" if ok else "FAIL", "pin stamp stored", rec.get("pins")))
+        rec["pins"] = "stale"
+        again = resolve_route("Lancaster, PA", st_p)
+        ok = again.get("pins") == pin_stamp() and again.get("cluster") == "york"
+        if not ok:
+            fails += 1
+        print("%-6s %-20s -> re-resolved=%s" % ("PASS" if ok else "FAIL", "stale pin ignored",
+                                                again.get("min")))
     finally:
         geocode, snap_point, route_summary = saved
     return fails
@@ -2205,6 +2222,11 @@ def _remember(routes: dict, loc: str, rec: dict) -> dict:
     return rec
 
 
+def pin_stamp() -> str:
+    """Fingerprint of the two pins, so editing one invalidates every cached route."""
+    return "|".join("%s:%.4f,%.4f" % (k, v["lat"], v["lon"]) for k, v in sorted(ORIGINS.items()))
+
+
 def resolve_route(loc, st: dict) -> dict:
     """Route a normalized location from its cluster pin, caching the answer per location.
 
@@ -2212,7 +2234,11 @@ def resolve_route(loc, st: dict) -> dict:
     not per job. Returns a record with `cluster`, `minutes` and `geometry`, or `error`/`skipped`.
     """
     routes = st.setdefault("routes", {})
+    stamp = pin_stamp()
     cached = routes.get(loc) or {}
+    if cached and cached.get("pins") not in (None, stamp):
+        # The pins moved since this was measured: the drive no longer means anything.
+        cached = {}
     if cached and (cached.get("at") or cached.get("error")):
         # An error is retried once a day; a real answer is reused for good.
         if cached.get("error") and _age_hours(cached.get("at")) > 24:
@@ -2259,6 +2285,7 @@ def resolve_route(loc, st: dict) -> dict:
 
     routes[loc] = {
         "at": now_iso(),
+        "pins": stamp,
         "cluster": cluster,
         "label": ORIGINS[cluster]["label"],
         "min": route["minutes"],
