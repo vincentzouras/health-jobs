@@ -1395,7 +1395,43 @@ def _name_from_url(url: str) -> str:
     return host or "New source"
 
 
-def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "") -> dict:
+IFRAMES_JS = r"""
+(() => {
+  const out = [];
+  for (const f of document.querySelectorAll('iframe[src], frame[src]')) {
+    const s = f.getAttribute('src') || '';
+    if (/^https?:/i.test(s)) out.push(s.slice(0, 300));
+    if (out.length >= 10) break;
+  }
+  return out;
+})()
+"""
+
+
+def probe_iframes(url: str, wait: float = 6.0) -> list:
+    """iframe/frame URLs on a careers page. Small employers embed their ATS, so this is how a
+    board that looks empty from the outside is found. [] on any problem."""
+    try:
+        tab = camo("POST", "/tabs", {"userId": USER, "sessionKey": "jobwatch", "url": url})
+        tid = tab.get("tabId") or tab.get("id") or (tab.get("tab") or {}).get("tabId")
+        if not tid:
+            return []
+        try:
+            time.sleep(wait)
+            ev = camo("POST", "/tabs/%s/evaluate" % tid,
+                      {"userId": USER, "expression": IFRAMES_JS})
+            return [u for u in (ev.get("result") or []) if isinstance(u, str)]
+        finally:
+            try:
+                camo("DELETE", "/tabs/%s?userId=%s" % (tid, USER), timeout=20)
+            except Exception:
+                pass
+    except Exception:
+        return []
+
+
+def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "",
+                 depth: int = 0) -> dict:
     """Fetch one candidate board and report whether it is worth adding. Never raises."""
     res = {"url": url, "ok": False, "platform": "unknown", "postings": 0,
            "sample": [], "error": None, "source": None}
@@ -1420,6 +1456,15 @@ def probe_source(url: str, wait: float = 10.0, name: str = "", location: str = "
     if best is None:
         return res
     rows, used_extract = best
+    # Nothing on the page itself: the board may be embedded from an ATS. Follow it once.
+    if len(rows) < 5 and depth == 0:
+        for frame in probe_iframes(url):
+            inner = probe_source(frame, wait=wait, name=name, location=location, depth=1)
+            if inner["ok"]:
+                inner["url"] = frame
+                inner["via"] = url
+                inner["source"]["name"] = name or inner["source"]["name"]
+                return inner
     res["postings"] = len(rows)
     res["sample"] = [str(r.get("t") or "")[:80] for r in rows[:5]]
     res["platform"] = platform_of(url, [r.get("h") for r in rows])
