@@ -1,5 +1,5 @@
 import JobBoard from './JobBoard';
-import { ensureSchema, hasDb, JOB_COLUMNS, pool, rowToJob } from '@/lib/db';
+import { ensureSchema, getWatchState, hasDb, JOB_COLUMNS, pool, rowToJob, WATCH_DEFAULTS } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +8,10 @@ async function load() {
     return {
       active: [],
       archive: [],
-      meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0, db: false },
+      meta: {
+        lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+        watch: WATCH_DEFAULTS, db: false,
+      },
     };
   }
   try {
@@ -34,6 +37,7 @@ async function load() {
         scannerVersion: metaMap.scanner_version ?? null,
         mapOrigin: (origin.rows[0]?.origin_label as string) ?? null,
         retired: jobs.filter((j) => j.status === 'retired').length,
+        watch: await getWatchState(),
         db: true,
       },
     };
@@ -41,7 +45,10 @@ async function load() {
     return {
       active: [],
       archive: [],
-      meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0, db: true },
+      meta: {
+        lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+        watch: WATCH_DEFAULTS, db: true,
+      },
       error: String(err).slice(0, 300),
     };
   }

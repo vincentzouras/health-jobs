@@ -168,8 +168,50 @@ def scanner_version() -> str:
         return "unknown"
 
 
+def watch_state() -> dict:
+    """The scanning knobs the dashboard owns: on/off, interval, and any pending "scan now".
+
+    Returns {} when the board is unreachable, which callers treat as "carry on" so a dashboard
+    outage never stops the scheduled scan.
+    """
+    if not WEB_URL:
+        return {}
+    try:
+        return _http_json("GET", WEB_URL + "/api/watch", timeout=15) or {}
+    except Exception:
+        return {}
+
+
+def clear_scan_request() -> None:
+    if not WEB_URL:
+        return
+    try:
+        _http_json("POST", WEB_URL + "/api/watch", {"clearRequest": True}, timeout=15)
+    except Exception:
+        pass
+
+
+def scan_is_due(state: dict, st: dict, gate: bool) -> tuple:
+    """"(should_scan, why)" from the dashboard knobs, never raises."""
+    if not state:
+        # No answer from the board: a scheduled run carries on, a gate run does nothing.
+        return (not gate, "board unreachable")
+    if not state.get("enabled", True):
+        return (False, "paused on the dashboard")
+    if state.get("requestedAt"):
+        return (True, "requested from the dashboard")
+    if not gate:
+        return (True, "scheduled run")
+    interval = state.get("intervalMin", 120)
+    if not interval:
+        return (False, "interval 0: only when asked")
+    last = st.get("last_run")
+    if _age_hours(last) * 60.0 >= interval:
+        return (True, "%.0f min since the last scan" % (_age_hours(last) * 60.0))
+    return (False, "last scan was %.0f min ago" % (_age_hours(last) * 60.0))
+
+
 def push_snapshot(relevant_jobs: dict, run_at: str, full: bool = True) -> str:
-    """Send the run's relevant postings to the Vercel dashboard. Never fatal."""
     if not WEB_URL or not WEB_TOKEN:
         return "skipped (JOB_BOARD_URL / JOB_BOARD_TOKEN not set)"
     payload = {
@@ -1415,6 +1457,28 @@ def _boundary_selftest() -> int:
             fails += 1
         print("%-6s %-20s -> re-resolved=%s" % ("PASS" if ok else "FAIL", "stale pin ignored",
                                                 again.get("min")))
+
+        # The dashboard gate: what decides whether the Pi scrapes at all.
+        fresh = {"last_run": now_iso()}
+        old = {"last_run": "2020-01-01T00:00:00Z"}
+        gate_cases = [
+            ("paused", {"enabled": False}, old, False, False),
+            ("paused gate", {"enabled": False}, old, True, False),
+            ("requested", {"enabled": True, "requestedAt": "x", "intervalMin": 999},
+             fresh, True, True),
+            ("scheduled", {"enabled": True, "intervalMin": 120}, fresh, False, True),
+            ("too soon", {"enabled": True, "intervalMin": 120}, fresh, True, False),
+            ("interval elapsed", {"enabled": True, "intervalMin": 120}, old, True, True),
+            ("only on demand", {"enabled": True, "intervalMin": 0}, old, True, False),
+            ("board down, sched", {}, old, False, True),
+            ("board down, gate", {}, old, True, False),
+        ]
+        for label, watch, state, gate, want in gate_cases:
+            got = scan_is_due(watch, state, gate)[0]
+            ok = got == want
+            if not ok:
+                fails += 1
+            print("%-6s %-20s -> scan=%s" % ("PASS" if ok else "FAIL", label, got))
     finally:
         geocode, snap_point, route_summary = saved
     return fails
@@ -2506,6 +2570,18 @@ def main() -> int:
         return check_maps()
     if "--backfill-maps" in args:
         return backfill_maps(st, relevant_from_state(st))
+
+    # The dashboard owns "is scanning on", how often, and whether a scan was asked for. Read it
+    # before any scraping, so switching it off costs one HTTP GET and no page loads.
+    watch = watch_state()
+    gate = "--gate" in args
+    due, why = scan_is_due(watch, st, gate)
+    if not due:
+        # Silent by design: a paused or not-yet-due tick must send nothing and log nothing.
+        return 0
+    if gate and "--verbose" in args:
+        print("job watch: scanning (%s)" % why)
+
     found, errors = collect(st.get("source_health", {}))
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -2675,6 +2751,9 @@ def main() -> int:
     if maps:
         # After the job rows exist: job_maps has a foreign key onto jobs.
         st["web_sync_maps"] = push_maps(maps, now)
+    if watch.get("requestedAt"):
+        # This run was the one asked for; drop the request so the gate does not repeat it.
+        clear_scan_request()
     save_state(st)
 
     if not new_keys:

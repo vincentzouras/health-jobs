@@ -16,6 +16,7 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from '@mui/material';
@@ -33,6 +34,8 @@ interface ApiPayload {
     mapOrigin: string | null;
     /** Rows that fell outside the 50 minute boundary and are hidden. */
     retired: number;
+    /** Scanning knobs owned by the dashboard: the Pi reads them every run. */
+    watch: { enabled: boolean; intervalMin: number; requestedAt: string | null };
     db: boolean;
   };
   error?: string;
@@ -313,7 +316,24 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
   const [mounted, setMounted] = useState(false);
   const [dismissing, setDismissing] = useState<string | null>(null);
   const [reasonDraft, setReasonDraft] = useState('');
+  const [watch, setWatch] = useState(initial.meta.watch);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const setWatchMode = useCallback(
+    async (body: { enabled?: boolean; intervalMin?: number; requestScan?: boolean }) => {
+      try {
+        const res = await fetch('/api/watch', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (res.ok) setWatch((await res.json()) as typeof watch);
+      } catch {
+        /* the switch will simply show the old state */
+      }
+    },
+    [],
+  );
 
   // Relative times must not be rendered during SSR, or the server and client
   // markup disagree (React hydration error #418).
@@ -487,6 +507,54 @@ export default function JobBoard({ initial }: { initial: ApiPayload }) {
             {data.meta.retired > 0 && ` · ${data.meta.retired} dropped as out of range`}
           </Typography>
         </Stack>
+
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap', alignItems: 'center' }}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+              <Switch
+                checked={watch.enabled}
+                onChange={(e) => void setWatchMode({ enabled: e.target.checked })}
+                slotProps={{ input: { 'aria-label': 'Keep scanning for new jobs' } }}
+              />
+              <Box>
+                <Typography variant="body2">{watch.enabled ? 'Scanning is on' : 'Scanning is paused'}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {watch.enabled
+                    ? `The Pi checks every ${watch.intervalMin ? `${watch.intervalMin} min` : '— on demand only'}`
+                    : 'The Pi stops before opening any browser page'}
+                </Typography>
+              </Box>
+            </Stack>
+            <TextField
+              select
+              size="small"
+              label="Check every"
+              value={String(watch.intervalMin)}
+              onChange={(e) => void setWatchMode({ intervalMin: Number(e.target.value) })}
+              disabled={!watch.enabled}
+              sx={{ minWidth: 150 }}
+            >
+              <MenuItem value="30">30 minutes</MenuItem>
+              <MenuItem value="60">1 hour</MenuItem>
+              <MenuItem value="120">2 hours</MenuItem>
+              <MenuItem value="240">4 hours</MenuItem>
+              <MenuItem value="0">On demand only</MenuItem>
+            </TextField>
+            <Box sx={{ flex: 1 }} />
+            <Button
+              variant="outlined"
+              onClick={() => void setWatchMode({ requestScan: true, enabled: true })}
+              disabled={!!watch.requestedAt}
+            >
+              {watch.requestedAt ? 'Scan queued' : 'Scan now'}
+            </Button>
+          </Stack>
+          {watch.requestedAt && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+              Queued — the Pi picks it up within 5 minutes.
+            </Typography>
+          )}
+        </Paper>
 
         {!data.meta.db && (
           <Alert severity="warning">

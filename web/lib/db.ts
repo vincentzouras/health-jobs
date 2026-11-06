@@ -155,3 +155,40 @@ export async function ensureSchema(): Promise<void> {
 export function jobId(employer: string, jobKey: string): string {
   return crypto.createHash('sha1').update(`${employer}|${jobKey}`).digest('hex').slice(0, 16);
 }
+
+/**
+ * The Pi's scanning knobs, kept in the same `meta` table the scanner already reports to.
+ * The Pi reads them at the start of every run, so changing one here takes effect on the next
+ * tick without touching the Pi (or the cron).
+ */
+export interface WatchState {
+  /** false = the scanner exits immediately and stays silent. */
+  enabled: boolean;
+  /** Minutes the gate waits between scans; 0 means "only when asked". */
+  intervalMin: number;
+  /** ISO stamp set by "Scan now", cleared by the run that honours it. */
+  requestedAt: string | null;
+}
+
+export const WATCH_DEFAULTS: WatchState = { enabled: true, intervalMin: 120, requestedAt: null };
+
+export async function getWatchState(): Promise<WatchState> {
+  const { rows } = await pool().query(
+    `SELECT key, value FROM meta WHERE key IN ('watch_enabled','scan_interval_min','scan_requested')`,
+  );
+  const m = Object.fromEntries(rows.map((r) => [String(r.key), r.value as string]));
+  const interval = Number(m.scan_interval_min);
+  return {
+    enabled: m.watch_enabled === undefined ? WATCH_DEFAULTS.enabled : m.watch_enabled === '1',
+    intervalMin: Number.isFinite(interval) ? interval : WATCH_DEFAULTS.intervalMin,
+    requestedAt: m.scan_requested || null,
+  };
+}
+
+export async function setMeta(key: string, value: string): Promise<void> {
+  await pool().query(
+    `INSERT INTO meta (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [key, value],
+  );
+}

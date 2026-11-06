@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ensureSchema, hasDb, JOB_COLUMNS, pool, rowToJob } from '@/lib/db';
+import { ensureSchema, getWatchState, hasDb, JOB_COLUMNS, pool, rowToJob, WATCH_DEFAULTS } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -7,7 +7,14 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   if (!hasDb()) {
     return NextResponse.json(
-      { active: [], archive: [], meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, db: false } },
+      {
+        active: [],
+        archive: [],
+        meta: {
+          lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+          watch: WATCH_DEFAULTS, db: false,
+        },
+      },
       { status: 200 },
     );
   }
@@ -39,12 +46,20 @@ export async function GET() {
         scannerVersion: metaMap.scanner_version ?? null,
         mapOrigin: (origin.rows[0]?.origin_label as string) ?? null,
         retired,
+        watch: await getWatchState(),
         db: true,
       },
     });
   } catch (err) {
     return NextResponse.json(
-      { active: [], archive: [], meta: { lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0, db: true }, error: String(err).slice(0, 300) },
+      {
+        active: [], archive: [],
+        meta: {
+          lastIngest: null, scannerVersion: null, mapOrigin: null, retired: 0,
+          watch: WATCH_DEFAULTS, db: true,
+        },
+        error: String(err).slice(0, 300),
+      },
       { status: 200 },
     );
   }
